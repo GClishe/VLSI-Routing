@@ -1,4 +1,5 @@
 import time
+import heapq
 
 # My initial thoughts are this: 
 # I still need to re-learn the different algorithms, but I do want there to be a global routing -> detailed routing strategy.
@@ -14,7 +15,7 @@ def A_star(start, goal):
     """
     open_set = {start}   # frontier implemented as a priority queue (not set) because order matters
     came_from = dict()   # came_from initialized as an empty dict
-    g = inf              # f(n) = g(n) + h(n) where n is the next node on the path. G is the actual cost of the path from the start node to n
+    g = inf              # f(n) = g(n) + h(n) where n is the next node on the path. G is the actual cost of the path from the start node to n. initialized to infinity for all cells except start.
     h = inf              # h is a heuristic estimate of the cost of the cheapest path from n to goal. 
     g[start] = 0         # actual cost of reaching the start node from the start node
     f[start] = h[start]  
@@ -24,12 +25,34 @@ def A_star(start, goal):
             return reconstruct_path(came_from, current)         # reconstructs path
         open_set.remove(current)                                # current is not the goal node. we remove from the frontier 
         for each neighbor of current:
-            tentative_g = g[current] + c(current,neighbor)      # c(n,m) is the cost of going from n to m. tentative_g analyzes the cost of reaching the neighbor from the current node
-            if tentative_g < g[neighbor]:                       # if the cost of reaching that neighbor from the current node is less than the cost of reaching the neighbor from the start
-                came_from[neighbor] = current                   # to get to neighbor, you came from current
-                g[neighbor] = tentative_g                       
-                f[neighbor] = tentative_g + h(neighbor)
-                if neighbor not in open_set:
+            tentative_g = g[current] + c(current,neighbor)      # cost of best known path to current + cost to step from current to neighbor. 
+            if tentative_g < g[neighbor]:                       # if this new cost is smaller than the previously recorded g[neighbor], then we have found a better path to that neighbor.
+                came_from[neighbor] = current                   # since we found a better path, we record that the best way to reach the neighbor is by current
+                g[neighbor] = tentative_g                       # we update the cost to reach the neighbor
+                f[neighbor] = tentative_g + h(neighbor)         # update the total estimated cost
+                if neighbor not in open_set:                    # add the neighbor to the open set
                     open_set.add(neighbor)                                  
     
     """
+    def h(current, goal):
+        # h is the heurisitic estimate from current to the goal
+        x1,y1 = current     # unpacks current coordinates
+        x2,y2 = goal        # unpacks goal coordinates
+        return abs(x1-x2) + abs(y1-y2)
+    
+    def reconstruct_path(move_list, current_node):
+        # traces back the path from current_node back to the start of move_list
+        pass
+
+    f_start = h(start)
+    g_start = 0
+
+    open_set = []                              
+    heapq.heappush(open_set, (f_start,start))   # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
+
+    came_from = {start: None}                               # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
+    while open_set: 
+        current = heapq.heappop(open_set)                   # removes node with lowest f from the heap and sets it to current. 
+        if current == goal: 
+            return reconstruct_path(came_from, current)     # if current is the goal, then we stop and reconstruct the path
+        
