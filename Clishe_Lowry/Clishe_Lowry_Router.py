@@ -40,22 +40,21 @@ def A_star(start, goal):
         x1,y1 = c1     # unpacks current coordinates
         x2,y2 = c2     # unpacks goal coordinates
         return abs(x1-x2) + abs(y1-y2)
+    
     def h(current, goal):
         # h is the heurisitic estimate from current to the goal
         # A better heuristic other than dist may be looked into, but keep in mind that h() should be consistent, or at least admissible. 
         return dist(current,goal)
     
-    def reconstruct_path(move_list, current_node):
-        # traces back the path from current_node back to the start of move_list
-        """
-        pseudocode: 
-        total_path = {current}
-        while current in came_from.keys():
-            current = came_from[current]
-            total_path.prepend(current)
-        return total_path
-        """
-        pass
+    def reconstruct_path(came_from, current):
+        # traces back the path from current_node back to the start of move_list. Successive indices in the output list indicate successive nodes in the path. 
+        path = [current]                            # start at the goal node (this function is only called when current == goal)
+        while came_from[current] is not None:       # came_from is the list of key: value pairs where in order to get to key, we traversed through value. came_from[start] == None
+            current = came_from[current]            # moving down the list toward the start
+            path.append(current)                    
+        path.reverse()                              # reverse the list to get a start --> goal path instead of a goal --> start path. 
+        return path
+
 
     def find_neighbors(current_cell):
         # returns a list of the neighbors of current_cell 
