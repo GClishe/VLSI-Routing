@@ -12,29 +12,6 @@ import math
 # For routing, I will use A*. 
 
 def A_star(start, goal): 
-    #pseudocode below
-    """
-    open_set = {start}   # frontier implemented as a priority queue (not set) because order matters
-    came_from = dict()   # came_from initialized as an empty dict
-    g = inf              # f(n) = g(n) + h(n) where n is the next node on the path. G is the actual cost of the path from the start node to n. initialized to infinity for all cells except start.
-    h = inf              # h is a heuristic estimate of the cost of the cheapest path from n to goal. 
-    g[start] = 0         # actual cost of reaching the start node from the start node
-    f[start] = h[start]  
-    while open_set is not empty:        # loop until a solution is found or the frontier is empty
-        current  = node in open_set (frontier) having the lowest f[] value
-        if current = goal:
-            return reconstruct_path(came_from, current)         # reconstructs path
-        open_set.remove(current)                                # current is not the goal node. we remove from the frontier 
-        for each neighbor of current:
-            tentative_g = g[current] + c(current,neighbor)      # cost of best known path to current + cost to step from current to neighbor. 
-            if tentative_g < g[neighbor]:                       # if this new cost is smaller than the previously recorded g[neighbor], then we have found a better path to that neighbor.
-                came_from[neighbor] = current                   # since we found a better path, we record that the best way to reach the neighbor is by current
-                g[neighbor] = tentative_g                       # we update the cost to reach the neighbor
-                f[neighbor] = tentative_g + h(neighbor)         # update the total estimated cost
-                if neighbor not in open_set:                    # add the neighbor to the open set
-                    open_set.add(neighbor)                                  
-    
-    """
     def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
         x1,y1 = c1     # unpacks current coordinates
