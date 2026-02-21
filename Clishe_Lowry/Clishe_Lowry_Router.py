@@ -2,14 +2,32 @@ import time
 import heapq
 import math
 
-# My initial thoughts are this: 
-# I still need to re-learn the different algorithms, but I do want there to be a global routing -> detailed routing strategy.
-# Therefore, I think the main routing function will take in a N x M grid (NOT the placement grid) and use one of the algorithms 
-# to find a route between two selected points. By not using the original placement grid here, we will be able to use this same
-# function for both global and detailed routing. There will need to be another function that, once a global route is found, transforms that global route
-# into its own placement grid that we can input back into this main function and find a detailed route inside of it. 
+"""
+Some notes on future implementation: 
+I want there to be a distinction between global routing and detailed routing. Therefore, I am thinking of implementing the workflow below:
+1) Extract pin coordinates for all nets to be routed. 
+2) Decide in some way on a routing order. Maybe start with longest first (by manhattan distance) or most constrained first (pins in dense regions, so more expected congestion)
+3) Create some kind of routing database and maintain it as routing occurs. It should contain information for each cell that describes blockages on that cell on a particular metal layer.
+   For example, a list (more likely an unordered set) with information such as (x,y,layer) that describes what layers are occuping the particular x,y coordinate. Ill need to think more on this.
+4) For each net, decide whether to run global routing first. If not, skip directly to detailed routing.
+5) Global routing: 
+    * Coarsen placement grid into tiles containing k*k cells
+    * Run 2D A* routing on the tile grid from the source tile to the target tile.
+    * If a tile contains many previously routed nets, maybe consider this tile as crowded and store some kind of congestion penalty to this tile in the database on step 3. 
+    * Maybe add turn penalties. Global routing is going to occur in 2D, but we know that if there are many turns, we need at least that many vias, so a turn penalty here is a kind of proxy for vias. 
+6) Convert global route into a corrdior on the detailed grid
+    * Expand the tile path from global routing into a set of preferred cells
+    * Add cost penalties for cells outside the corrdior
+7) Detailed Routing: 
+    * Route on a 3D grid (something like (x,y,layer)) across m2-m9 with pins on m1. 
+    * Legal moves will only be steps within the same metal layer in the preferred direction plus via moves between adjacent layers
+    * Final path must start and end with m1-m2 vias. Each cell hop will be 1 + addl' cost (from global routing corrdior. maybe additional costs will be added to congested cells).
+      Each via will add 2. 
+8) Put routed path into routing database from step 3. Add occupancy details, update congestion, that kind of thing. Clear global routing corrdiors. 
+9) If severe congestion or routing failures, rip up and reroute selected nets (the ones causing the blockage for example. Might need to rewatch this portion of the lecture (week 6) for additional info).
 
-# For routing, I will use A*. 
+"""
+
 
 def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
