@@ -11,13 +11,17 @@ import math
 
 # For routing, I will use A*. 
 
-def A_star(start, goal): 
-    def dist(c1, c2):
+def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
         x1,y1 = c1     # unpacks current coordinates
         x2,y2 = c2     # unpacks goal coordinates
         return abs(x1-x2) + abs(y1-y2)
-    
+
+def A_star(start, goal): 
+    # Below are some helper functions for A*. In the future, it might be beneficial to define these functions outside of A_star(). If A_star() is called
+    # frequently, then defining these functions globally instead of locally will likely save some time (the functions will only be defined once rather than on each iteration).
+    # For now though, I will keep them local for the sake of readability. 
+      
     def h(current, goal):
         # h is the heurisitic estimate from current to the goal
         # A better heuristic other than dist may be looked into, but keep in mind that h() should be consistent. Non consistent heuristics might require a rewrite of the A* algorithm
