@@ -1,5 +1,6 @@
 import time
 import heapq
+import math
 
 # My initial thoughts are this: 
 # I still need to re-learn the different algorithms, but I do want there to be a global routing -> detailed routing strategy.
@@ -60,26 +61,34 @@ def A_star(start, goal):
         # returns a list of the neighbors of current_cell 
         pass
 
-    f_start = h(start)
-    g = {start: 0}                        # initializing the g dictionary. Each cell other than the start is initialized to infinity 
+    g = {start: 0.0}                            # initializing the g dictionary. Each cell other than the start is initialized to infinity 
 
     open_set = []                              
-    heapq.heappush(open_set, (f_start,start))   # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
+    heapq.heappush(open_set, (h(start,goal),start))  # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
+
+    closed = set()                              # unordered set of nodes already expanded (popped and processed). With a consistent heuristic, once a node is expanded its best g is final, so we never expand it again. This is needed if we allow duplicates in open_set (we do)
 
     came_from = {start: None}                               # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
     while open_set: 
-        _, current = heapq.heappop(open_set)                # removes node with lowest f from the heap and sets it to current. heappop returns the (f,node) tuple at the top of the heap, so we need to unpack the tuple with _, current (discarding the f).
+        current = heapq.heappop(open_set)[1]                # removes node with lowest f from the heap and sets it to current. heappop returns the (f,node) tuple at the top of the heap, but we only need the node, so we only keep tupl0e[1]
+        
+        # if the node is in current, then we have already visited that node. As long as the heuristic is consistent, we know that since we already visited the node, the g value it had is guaranteed to be optimal, so we have no need to revisit it (executing the rest of the loop)
+        if current in closed:
+            continue
+        
         if current == goal: 
             return reconstruct_path(came_from, current)     # if current is the goal, then we stop and reconstruct the path
-        neighbors = find_neighbors(current)
-        for neighbor in neighbors:
+        
+        closed.add(current)                                 # by popping current from open_set, we are visiting the node. So we add it to closed.
+        
+        for neighbor in find_neighbors(current):
             tentative_g = g[current] + dist(current,neighbor)
-            if tentative_g < g.get(current, float("inf")):      # this is where the "each cell other than the start is initialized to infinity" comes into play. if current does not exist in the g dict, then we use infinity as a placeholder. 
+            
+            if tentative_g < g.get(neighbor, math.inf):          # this is where the "each cell other than the start is initialized to infinity" comes into play. if current does not yet exist in the g dict, then we use infinity as a placeholder. 
                 came_from[neighbor] = current
                 g[neighbor] = tentative_g
-                f[neighbor] = tentative_g + h(neighbor)
-                if neighbor not in open_set:
-                    heapq.heappush(open_set, (f[neighbor], neighbor))
+                f_neighbor = tentative_g + h(neighbor, goal)
+                heapq.heappush(open_set, (f_neighbor, neighbor))   # we always push neighbor to the frontier. This allows duplicates, but old values of neighbor that are already in open_set with larger f[neighbor] values will never be visited due to the "if node in closed" check at the start of the loop
 
     print(f"A* terminated with no path found between {start} and {goal}.")  # in the future I may raise an error here instead of a print statement and return None.
     return None
