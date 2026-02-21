@@ -43,7 +43,7 @@ def A_star(start, goal):
     
     def h(current, goal):
         # h is the heurisitic estimate from current to the goal
-        # A better heuristic other than dist may be looked into, but keep in mind that h() should be consistent, or at least admissible. 
+        # A better heuristic other than dist may be looked into, but keep in mind that h() should be consistent. Non consistent heuristics might require a rewrite of the A* algorithm
         return dist(current,goal)
     
     def reconstruct_path(came_from, current):
@@ -58,6 +58,8 @@ def A_star(start, goal):
 
     def find_neighbors(current_cell):
         # returns a list of the neighbors of current_cell 
+        # Before this function can be implemented, we need to know what the structure of current_cell is. A coordinate? A cell name? Something else? 
+        # We will also need to figure out the structure of the placement grid. find_neighbors should not return neighbors that are outside the grid or that are blocked. 
         pass
 
     g = {start: 0.0}                            # initializing the g dictionary. Each cell other than the start is initialized to infinity 
