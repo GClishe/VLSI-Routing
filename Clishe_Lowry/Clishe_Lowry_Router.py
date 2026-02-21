@@ -61,20 +61,20 @@ def A_star(start, goal):
         pass
 
     f_start = h(start)
-    g_start = 0
+    g = {start: 0}                        # initializing the g dictionary. Each cell other than the start is initialized to infinity 
 
     open_set = []                              
     heapq.heappush(open_set, (f_start,start))   # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
 
     came_from = {start: None}                               # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
     while open_set: 
-        current = heapq.heappop(open_set)                   # removes node with lowest f from the heap and sets it to current. 
+        _, current = heapq.heappop(open_set)                # removes node with lowest f from the heap and sets it to current. heappop returns the (f,node) tuple at the top of the heap, so we need to unpack the tuple with _, current (discarding the f).
         if current == goal: 
             return reconstruct_path(came_from, current)     # if current is the goal, then we stop and reconstruct the path
         neighbors = find_neighbors(current)
         for neighbor in neighbors:
             tentative_g = g[current] + dist(current,neighbor)
-            if tentative_g < g[neighbor]:
+            if tentative_g < g.get(current, float("inf")):      # this is where the "each cell other than the start is initialized to infinity" comes into play. if current does not exist in the g dict, then we use infinity as a placeholder. 
                 came_from[neighbor] = current
                 g[neighbor] = tentative_g
                 f[neighbor] = tentative_g + h(neighbor)
