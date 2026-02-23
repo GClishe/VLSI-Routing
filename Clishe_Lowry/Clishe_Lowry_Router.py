@@ -29,11 +29,44 @@ I want there to be a distinction between global routing and detailed routing. Th
 """
 
 
+#pasting an example netlist for testing purposes. Will delete later. 
+netlist = {   'grid_size': 100,
+    'nets': {   'NET_0': {   'length': 3,
+                             'pins': [(99, 56), (99, 59)],
+                             'type': 'LOCAL'},
+                'NET_1': {   'length': 48,
+                             'pins': [(5, 72), (44, 63)],
+                             'type': 'MEDIUM'},
+                'NET_2': {   'length': 52,
+                             'pins': [(43, 74), (5, 60)],
+                             'type': 'LONG'}}}
+
+
 def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
         x1,y1 = c1     # unpacks current coordinates
         x2,y2 = c2     # unpacks goal coordinates
         return abs(x1-x2) + abs(y1-y2)
+
+def create_routing_order(netlist):
+    # For now, I will choose the order exclusively by manhattan length, but future implementations might look at congestion as well.
+    # One option is to compute length for each net and then sort a list of length,net_name tuples by their length, but this would be O(n) + O(nlogn).
+    # This will almost certainly not be the bottleneck for this algorithm, but we might as well try to make things efficient from the start. A better 
+    # way will be utilizing the fact that the max lenght of a net is not that big, even for the largest netlists. We can create buckets (list of lists),
+    # one for each possible net length, and then appending cell names to their corresponding bucket. This is faster because the max possible manhattan length
+    # is going to be 3000, since the largest grid we have is 1500x1500. 
+    # How routing order is determined will be revisited later depending on how many ripups and failures that we get. 
+
+    max_dist = 2 * netlist['grid_size']                      
+    buckets = [[] for _ in range(max_dist)]                  # initializes list [[], [], [], ..., []] of size max_dist
+    for net_name, data in netlist['nets'].items():
+        idx = (max_dist-1) - dist(*data['pins'])             # subtact the distance between the two pins in data['pins'] from the largest possible index to ensure correct ordering
+        buckets[idx].append(net_name)        
+    
+    # buckets now has the form [[],[],[NET_1],[NET_2,NET_3], ..., [NET_100]] or something along those lines. Now I want to simply flatten the list and return the result.
+    flattened_buckets = [subarray_element for subarray in buckets for subarray_element in subarray]         # now has the form list[str] instead of list[list[str]]
+
+    return flattened_buckets
 
 def A_star(start, goal): 
     # Below are some helper functions for A*. In the future, it might be beneficial to define these functions outside of A_star(). If A_star() is called
