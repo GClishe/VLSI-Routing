@@ -40,6 +40,27 @@ class RoutingDB:
         self.num_layers = num_layers            # number of routing layers
         self.tile_size  = tile_size             # size of the global routing tiles
 
+        # now we create the detailed occupancy grid. occ[layer][x][y] tells you if the coordinate (x,y,layer) is occupied already.
+        # detailed occupancy grid is initialized to all False
+        self.occ = [
+            [[False for _ in range(grid_size)]
+             for _ in range(grid_size)]
+             for _ in range(num_layers)
+        ]
+
+        # we now need to figure out how many tiles will be present in global routing.
+        # with a tile size of 10, a grid with grid_size of 100 will have 10 tiles per row.
+        # if the tiles of our specified size do not cleanly fit in the grid, we use ceiling function to ensure
+        # that edge cells are still included in a tile, even if those tiles are smaller than the rest (they will be clipped by in_bounds checks).
+        self.num_tiles = math.ceil(grid_size/tile_size)
+
+        # now we implement global routing tile congestion ideas. the congestion of a tile is how many nets have a route that passes through the tile.
+        # congestion value is initialized to 0 for all tiles
+        self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)]
+
+        self.net_routes = {}        # dict that contains net_name -> list of (x,y,layer) cells on that net
+              
+
     def in_bounds(self, x: int, y: int) -> bool:
         # returns true if the provided coordinate is in bounds
         pass
