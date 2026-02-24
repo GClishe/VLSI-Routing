@@ -40,13 +40,9 @@ class RoutingDB:
         self.num_layers = num_layers            # number of routing layers
         self.tile_size  = tile_size             # size of the global routing tiles
 
-        # now we create the detailed occupancy grid. occ[layer][x][y] tells you if the coordinate (x,y,layer) is occupied already.
-        # detailed occupancy grid is initialized to all False
-        self.occ = [
-            [[False for _ in range(grid_size)]
-             for _ in range(grid_size)]
-             for _ in range(num_layers)
-        ]
+        # now we create the detailed occupancy grid. we could store occupancy details in a 3D array (each cell indexed with occ[layer][x][y]), but
+        # this would be extremely inefficient. Instead, we can flatten everything to a 1D array and find a mapping between (layer,x,y) to a single integer
+        # index. The mapping idx = (layer * W + x) * W + y does exactly that. Layers are stored sequentially and in row-major order.
 
         # we now need to figure out how many tiles will be present in global routing.
         # with a tile size of 10, a grid with grid_size of 100 will have 10 tiles per row.
