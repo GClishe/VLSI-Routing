@@ -81,7 +81,7 @@ class RoutingDB:
         cost = 1.0                                  # base cost. each step has a cost of at least 1
 
         if layer != nlayer:
-            cost += 2.0                             # vias cost 2
+            cost += 2.0 * abs(nlayer - layer)       # vias cost 2 for each layer traversal. Since we can stack vias, we need to compute how many layers are traversed. 
 
         cost += self.congestion_penalty(nx, ny)     # add a congestion penalty
 
