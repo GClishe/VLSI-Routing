@@ -282,7 +282,7 @@ def A_star(
         start,
         goal,
         routing_db,
-        endboints_are_tiles: bool = False,
+        endpoints_are_tiles: bool = False,
         congestion_weight: float = 1.0,
         turn_penalty: float = 0.0
 ):
@@ -315,7 +315,7 @@ def A_star(
     
     """
     # first, we need to map the detailed coordinate start and goal to tile coordinates.
-    if endboints_are_tiles:
+    if endpoints_are_tiles:
         start_tile = start
         goal_tile = goal
     else: 
@@ -416,3 +416,144 @@ def A_star(
 
     print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
+
+
+
+
+
+
+
+"""
+GLOBAL ROUTE VISUALIZATION
+Below is code entirely written by ChatGPT, intended entirely for visualization of global routing (to ensure correctness of what is written thus far)
+
+"""
+import matplotlib.pyplot as plt
+from matplotlib import patches
+def visualize_global_route(net_name: str, pin_a, pin_b, grid_size: int, tile_size: int, tile_path: list[tuple[int, int]]):
+    """
+    Visualization:
+      - faint detailed gridlines
+      - thicker tile gridlines
+      - pins highlighted at detailed coords
+      - route tiles shaded darker (others left light)
+    """
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_aspect("equal")
+    ax.set_xlim(0, grid_size)
+    ax.set_ylim(0, grid_size)
+    ax.set_title(f"Global route (tiles) for {net_name}")
+
+    # ---- faint detailed gridlines (can be expensive for large grids; keep alpha low)
+    # For very large grid_size, consider disabling this loop.
+    for i in range(grid_size + 1):
+        ax.axhline(i, linewidth=0.3, alpha=0.08)
+        ax.axvline(i, linewidth=0.3, alpha=0.08)
+
+    # ---- stronger tile gridlines
+    for i in range(0, grid_size + 1, tile_size):
+        ax.axhline(i, linewidth=1.0, alpha=0.35)
+        ax.axvline(i, linewidth=1.0, alpha=0.35)
+
+    # ---- shade route tiles
+    route_set = set(tile_path or [])
+    num_tiles = math.ceil(grid_size / tile_size)
+
+    # draw a light tile background (optional, but makes route contrast clearer)
+    for tx in range(num_tiles):
+        for ty in range(num_tiles):
+            x0 = tx * tile_size
+            y0 = ty * tile_size
+            w = min(tile_size, grid_size - x0)
+            h = min(tile_size, grid_size - y0)
+            in_route = (tx, ty) in route_set
+            rect = patches.Rectangle(
+                (x0, y0),
+                w,
+                h,
+                fill=True,
+                alpha=0.18 if in_route else 0.03,  # route tiles darker
+                linewidth=0.0,
+            )
+            ax.add_patch(rect)
+
+    # ---- draw route tile outlines a bit stronger
+    if tile_path:
+        for (tx, ty) in tile_path:
+            x0 = tx * tile_size
+            y0 = ty * tile_size
+            w = min(tile_size, grid_size - x0)
+            h = min(tile_size, grid_size - y0)
+            rect = patches.Rectangle((x0, y0), w, h, fill=False, linewidth=2.0, alpha=0.7)
+            ax.add_patch(rect)
+
+    # ---- pins (detailed coords)
+    (x1, y1) = pin_a
+    (x2, y2) = pin_b
+    ax.scatter([x1 + 0.5], [y1 + 0.5], s=80, marker="s", zorder=5)
+    ax.scatter([x2 + 0.5], [y2 + 0.5], s=80, marker="s", zorder=5)
+    ax.text(x1 + 1.0, y1 + 1.0, "PIN_A", fontsize=10, zorder=6)
+    ax.text(x2 + 1.0, y2 + 1.0, "PIN_B", fontsize=10, zorder=6)
+
+    # ---- cosmetics
+    ax.set_xlabel("x (detailed cells)")
+    ax.set_ylabel("y (detailed cells)")
+    ax.invert_yaxis()  # optional: comment out if you prefer y-up
+
+    plt.show()
+
+
+def run_first_net_global_route_test(netlist_dict: dict):
+    # 1) routing order
+    order = create_routing_order(netlist_dict)
+    if not order:
+        raise ValueError("create_routing_order() returned empty list.")
+    first_net = order[0]
+
+    # 2) instantiate RoutingDB (only need 1 layer for tile routing as written)
+    grid_size = netlist_dict["grid_size"]
+    tile_size = 10  # match your RoutingDB default unless you want to override
+    rdb = RoutingDB(grid_size=grid_size, num_layers=1, tile_size=tile_size)
+
+    # 3) pick endpoints for first net (pins are (x,y); give layer=0 for get_tile validation)
+    pins = netlist_dict["nets"][first_net]["pins"]
+    if len(pins) != 2:
+        raise ValueError(f"{first_net} has {len(pins)} pins; this test assumes exactly 2.")
+    (x1, y1), (x2, y2) = pins
+    start = (x1, y1, 0)
+    goal = (x2, y2, 0)
+
+    # 4) global route on tile grid
+    tile_path = A_star(
+        start=start,
+        goal=goal,
+        routing_db=rdb,
+        endpoints_are_tiles=False,
+        congestion_weight=1.0,
+        turn_penalty=0.0,
+    )
+
+    if tile_path is None:
+        print(f"No global route found for {first_net}.")
+        return
+
+    print(f"Routing order (first 10): {order[:10]}")
+    print(f"Selected net: {first_net}")
+    print(f"Pins: {pins}")
+    print(f"Tile path length: {len(tile_path)}")
+    print(f"Tile path (first 20): {tile_path[:20]}")
+
+    # 5) visualize
+    visualize_global_route(
+        net_name=first_net,
+        pin_a=pins[0],
+        pin_b=pins[1],
+        grid_size=grid_size,
+        tile_size=tile_size,
+        tile_path=tile_path,
+    )
+
+
+if __name__ == "__main__":
+    # Uses your example netlist unless you replace it with a real one.
+    run_first_net_global_route_test(netlist)
