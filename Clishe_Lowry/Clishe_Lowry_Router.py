@@ -65,7 +65,7 @@ class RoutingDB:
         # returns the tile indices for the provided coordinate. This is the global routing tile that
         # the selected coordinate lies in. I expect that this will be helpful for global routing and 
         # congestion checks
-        pass
+        return (x // self.tile_size, y // self.tile_size)
 
     def is_free(self, x: int, y: int, layer: int) -> bool:
         # checks whether (x,y,layer) is usable (not blocked)
