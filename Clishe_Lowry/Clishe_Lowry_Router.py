@@ -389,63 +389,30 @@ def A_star(
     dir_from = {start_tile: (0,0)}       # initializes dir_frmo dict that stores the direction used to arrive at each tile. See step_cost for how the tuple corresponds to direction
 
     while open_set:
+        current = heapq.heappop(open_set)[1]        # popping the (f,tile_coord) tuple from the top of the heap. Discarding the f value used for heap ordering. 
 
-
-
-def A_star(start, goal): 
-    # Below are some helper functions for A*. In the future, it might be beneficial to define these functions outside of A_star(). If A_star() is called
-    # frequently, then defining these functions globally instead of locally will likely save some time (the functions will only be defined once rather than on each iteration).
-    # For now though, I will keep them local for the sake of readability. 
-      
-    def h(current, goal):
-        # h is the heurisitic estimate from current to the goal
-        # A better heuristic other than dist may be looked into, but keep in mind that h() should be consistent. Non consistent heuristics might require a rewrite of the A* algorithm
-        return dist(current,goal)
-    
-    def reconstruct_path(came_from, current):
-        # traces back the path from current_node back to the start of move_list. Successive indices in the output list indicate successive nodes in the path. 
-        path = [current]                            # start at the goal node (this function is only called when current == goal)
-        while came_from[current] is not None:       # came_from is the list of key: value pairs where in order to get to key, we traversed through value. came_from[start] == None
-            current = came_from[current]            # moving down the list toward the start
-            path.append(current)                    
-        path.reverse()                              # reverse the list to get a start --> goal path instead of a goal --> start path. 
-        return path
-
-
-    def find_neighbors(current_cell):
-        # returns a list of the neighbors of current_cell 
-        # Before this function can be implemented, we need to know what the structure of current_cell is. A coordinate? A cell name? Something else? 
-        # We will also need to figure out the structure of the placement grid. find_neighbors should not return neighbors that are outside the grid or that are blocked. 
-        pass
-
-    g = {start: 0.0}                            # initializing the g dictionary. Each cell other than the start is initialized to infinity 
-
-    open_set = []                              
-    heapq.heappush(open_set, (h(start,goal),start))  # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
-
-    closed = set()                              # unordered set of nodes already expanded (popped and processed). With a consistent heuristic, once a node is expanded its best g is final, so we never expand it again. This is needed if we allow duplicates in open_set (we do)
-
-    came_from = {start: None}                               # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
-    while open_set: 
-        current = heapq.heappop(open_set)[1]                # removes node with lowest f from the heap and sets it to current. heappop returns the (f,node) tuple at the top of the heap, but we only need the node, so we only keep tupl0e[1]
-        
-        # if the node is in current, then we have already visited that node. As long as the heuristic is consistent, we know that since we already visited the node, the g value it had is guaranteed to be optimal, so we have no need to revisit it (executing the rest of the loop)
+        # skipping stale heap entries; with duplicates allowed, we need to skip cells that have already been expanded. We never need to re-expand as long as we have a consistent heuristic (its g value is already optimal)
         if current in closed:
             continue
-        
-        if current == goal: 
-            return reconstruct_path(came_from, current)     # if current is the goal, then we stop and reconstruct the path
-        
-        closed.add(current)                                 # by popping current from open_set, we are visiting the node. So we add it to closed.
-        
-        for neighbor in find_neighbors(current):
-            tentative_g = g[current] + dist(current,neighbor)
-            
-            if tentative_g < g.get(neighbor, math.inf):          # this is where the "each cell other than the start is initialized to infinity" comes into play. if current does not yet exist in the g dict, then we use infinity as a placeholder. 
-                came_from[neighbor] = current
-                g[neighbor] = tentative_g
-                f_neighbor = tentative_g + h(neighbor, goal)
-                heapq.heappush(open_set, (f_neighbor, neighbor))   # we always push neighbor to the frontier. This allows duplicates, but old values of neighbor that are already in open_set with larger f[neighbor] values will never be visited due to the "if node in closed" check at the start of the loop
 
-    print(f"A* terminated with no path found between {start} and {goal}.")  # in the future I may raise an error here instead of a print statement and return None.
+        # if current is the goal, then we are done. Reconstruct the path. 
+        if current == goal_tile:
+            return reconstruct_path(came_from, current)
+        
+        closed.add(current)     # by popping current from open_set, we are visiting the node. So we add it to closed.
+
+        for neighbor in find_neighbors(current):
+            prev_dir = dir_from[current]                                    # keeping track of the direction from which we arrived at current for detecting direction changes
+            move_cost, move_dir = step_cost(current, neighbor, prev_dir)    # identifying cost and direction for stepping into neighbor from current      
+            tentative_g = g[current] + move_cost                            # g value for stepping into the neighbor is the g to reach current plus the cost associated with the step into neighbor
+
+            if tentative_g < g.get(neighbor, math.inf):                     # this is where the "each cell other than the start is initialized to infinity" comes into play. if neighbor does not yet exist in the g dict, then we use infinity as a placeholder.
+                came_from[neighbor] = current                              
+                dir_from[neighbor] = move_dir                               # direction to arrive at neighbor stored in dir_from
+                g[neighbor] = tentative_g                                   
+
+                f_neighbor = tentative_g + h(neighbor, goal_tile)           # total f value for the cell is used for ordering in the heap
+                heapq.heappush(open_set, (f_neighbor, neighbor))            # pushing the neighbor into the frontier. Duplicates will occur, but old values of neighbor that are already in open_set with larger f[neighbor] values will never be visited due to the "if current in closed" check at the start of the loop
+
+    print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
