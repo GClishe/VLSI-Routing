@@ -314,6 +314,71 @@ def A_star(
         list of (tx,ty) tiles from start to goal inclusive, or None if no path is found.
     
     """
+    # first, we need to map the detailed coordinate start and goal to tile coordinates.
+    if endboints_are_tiles:
+        start_tile = start
+        goal_tile = goal
+    else: 
+        sx, sy, sl = start      # start_x, start_y, start_layer
+        gx, gy, gl = goal       # same for goal
+        start_tile = routing_db.get_tile(sx, sy, sl)  
+        goal_tile  = routing_db.get_tile(gx, gy, gl)
+
+    num_tiles = routing_db.num_tiles    # this is number of tiles to a size on the global tile grid. A square grid (which we have) has num_tiles^2 total tiles. 
+
+    def tile_in_bounds(tile):
+        """ Decides if a tile is in-bounds"""
+        tx, ty = tile
+        return (0 <= tx < num_tiles) and (0 <= ty < num_tiles)
+    
+    def h(current, goal):
+        """
+        Currently using manhattan distance as the heuristic. earlier dist() function was not written specifcally for detailed-grid coordinates, so we can use it again. 
+        since we include congestion/turn costs, we no longer have a consistent heuristic; it is now only admissible. h(n,goal) can not be greater than the actual cost
+        of reaching the goal from n. However, if we consider a a neighbor cell of n (call it n'), it is now possible for c(n,n') + h(n',goal) to be greater than h(n,goal),
+        which violates the consistenty requirement.
+        """
+        return dist(current, goal)
+
+    def reconstruct_path(came_from, current):
+        """
+        Traces back the path from current_node back to the start of move_list. Successive indices in the output list indicate successive nodes in the path. 
+        """
+        path = [current]                            # start at the goal node (this function is only called when current == goal)
+        while came_from[current] is not None:       # came_from is the list of key: value pairs where in order to get to key, we traversed through value. came_from[start] == None
+            current = came_from[current]            # moving down the list toward the start
+            path.append(current)                    
+        path.reverse()                              # reverse the list to get a start --> goal path instead of a goal --> start path. 
+        return path
+
+    def find_neighbors(current_cell):
+        """
+        Returns the in-bounds tiles that are neighbors of current_cell. This is much simpler for global routing because only one layer need be considered.
+        """
+        tx, ty = current_cell
+        candidates = [(tx + 1, ty), (tx - 1, ty), (tx, ty + 1), (tx, ty - 1)]   # list of candidate tiles
+        return [tile for tile in candidates if tile_in_bounds(tile)]            # returns the candidates that are in-bounds
+
+    def step_cost(current, neighbor, prev_dir):
+        """
+        Returns the cost to step frmo current tile to the neighbor tile and the direction of that move.
+        Cost starts at 1 for a tile step. Adds congestion_weight*tile_cong[neighbor] and 
+        also a turn penalty if direction changes relative to prev_dir.
+
+        """
+        x, y   = current
+        nx, ny = neighbor
+        cost = 1.0                                                  # base cost for stepping one tile
+        cost += congestion_weight * routing_db.tile_cong[nx,ny]     # added cost for entering congested tile
+
+        move_dir = (nx - x, ny - y)                                 # move direction determined by a tuple. (-1, 0) means a leftward move, (0,1) means an upward move, etc.
+        if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred.
+            cost += turn_penalty
+
+        return cost, move_dir
+
+
+
 
 
 def A_star(start, goal): 
