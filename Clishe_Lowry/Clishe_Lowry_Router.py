@@ -91,26 +91,10 @@ class RoutingDB:
         idx = self.coordinate_to_idx(x,y,layer)                                                     # converts (x,y,layer) coordinate to a 1D index 
         return (not self.occ[idx])                                                                  # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
 
+    # TODO complete this function
     def via_allowed(self, x: int, y: int, layer: int) -> bool:
         # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
         pass
-
-    def commit_route(self, net_name:str, path: list[tuple[int, int, int]]):
-        # commit a detailed route to the database. Paths are lists of (x,y,layer) pairs.
-        # note that the final export will have a different path structure
-        path_indices = []                                            # list containting the bitarray indices occupied by this net
-        for (x, y, layer) in path:
-            if not self.in_bounds(x, y, layer):
-                raise ValueError(f"Coordinate out of bounds: {(x, y, layer)}")
-
-            idx = self.coordinate_to_idx(x, y, layer)
-            path_indices.append(idx)
-            if self.occ[idx]: 
-                raise ValueError("collision")
-            self.occ[idx] = 1
-
-        self.net_routes[net_name] = path_indices                                             
-        return None                                                  # not necessary, but return None helps with readability
 
     def tiles_on_net(self, net_name: str) -> list[tuple[int,int]]:
         # returns the global-routing tiles (tx, ty) that the committed route for `net_name` passes through
@@ -118,8 +102,8 @@ class RoutingDB:
         if not cell_indices:
             return []
 
-        tile_indices: list[tuple[int, int]] = []
-        seen: set[tuple[int, int]] = set()
+        tile_indices = []
+        seen = set()
 
         for cell_idx in cell_indices:
             x, y, layer = self.idx_to_coordinate(cell_idx)  # idx -> (x,y,layer)
@@ -132,6 +116,41 @@ class RoutingDB:
 
         return tile_indices
 
+    def commit_route(self, net_name: str, path: list[tuple[int, int, int]]):
+        # validity check
+        if net_name in self.net_routes:
+            raise KeyError(f"{net_name} already committed")
+        
+        # validity checks
+        path_indices: list[int] = []
+        for (x, y, layer) in path:
+            if not self.in_bounds(x, y, layer):
+                raise ValueError(f"Coordinate out of bounds: {(x, y, layer)}")
+
+            idx = self.coordinate_to_idx(x, y, layer)
+            if self.occ[idx]:
+                raise ValueError(f"collision at {(x, y, layer)} (idx={idx})")
+            path_indices.append(idx)
+
+        # commit occupancy bits
+        for idx in path_indices:
+            self.occ[idx] = 1
+
+        # store route
+        self.net_routes[net_name] = path_indices
+
+        # increment congestion in tile_cong
+        tile_set = set()
+        for idx in path_indices:
+            x, y, layer = self.idx_to_coordinate(idx)
+            tile = (x // self.tile_size, y // self.tile_size)
+            if tile not in tile_set:
+                tile_set.add(tile)
+                tx, ty = tile
+                self.tile_cong[tx][ty] += 1
+
+        return None                               # not necessary, but return None helps with readability
+    
     def rip_up(self, net_name: str):
         # removes a previously committed route
         indices = self.net_routes[net_name]             # gets the list of indices for cells on the net
