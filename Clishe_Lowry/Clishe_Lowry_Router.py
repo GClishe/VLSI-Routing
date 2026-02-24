@@ -75,9 +75,17 @@ class RoutingDB:
         # computes incremental cost for moving from (x,y,layer) to (nx,ny,nlayer)
         # this will be helpful if we decide to introduce costs for making specific moves.
         # for example, if a step always has a cost of 1, we can just return 1. But if nlayer changes,
-        # we can add 2 to the cost. Or we can impose penalties for bends somehow (though this might 
-        # require knowing last cell coords, not sure yet).
-        pass
+        # we can add 2 to the cost. Somehow this will also need to incorporate cost from leaving a cooridor 
+        # created by global routing. 
+
+        cost = 1.0                                  # base cost. each step has a cost of at least 1
+
+        if layer != nlayer:
+            cost += 2.0                             # vias cost 2
+
+        cost += self.congestion_penalty(nx, ny)     # add a congestion penalty
+
+        return cost
 
 
 #pasting an example netlist for testing purposes. Will delete later. 
