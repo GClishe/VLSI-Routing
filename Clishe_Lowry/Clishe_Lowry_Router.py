@@ -59,7 +59,7 @@ class RoutingDB:
 
     def in_bounds(self, x: int, y: int) -> bool:
         # returns true if the provided coordinate is in bounds
-        pass
+        return (0 <= x <= self.grid_size-1) and (0 <= y <= self.grid_size-1)
 
     def get_tile(self, x: int, y: int) -> tuple[int,int]:
         # returns the tile indices for the provided coordinate. This is the global routing tile that
