@@ -278,6 +278,43 @@ def create_routing_order(netlist: dict) -> list[str]:
 
     return flattened_buckets
 
+def A_star(
+        start,
+        goal,
+        routing_db,
+        endboints_are_tiles: bool = False,
+        congestion_weight: float = 1.0,
+        turn_penalty: float = 0.0
+):
+    """
+    A* search on global tile grid. This is for the tile grid only (global routing). Detailed
+    routing will use this tile path to form a preferred corridor for detailed routes. 
+
+    parameters: 
+    start, goal: 
+        If endpoints_are_tiles is False (default):
+            Start and goal are detailed-grid coordinates (x,y,layer).
+            These are mapped to tile coords via routing_db.get_tile().
+        If endpoints_are_tiles is True:
+            start and goal are already tile coords (tx,ty).
+    routing_db:
+        Routing_DB instance.
+    congestion_weight:
+        Multiplier on tile congestion when computing step cost. 
+        Step cost to enter tile (nx,ny) is 1 + congestion_weight * tile_cong[nx][ny].
+        Useful for considering tile congestion in global routing. 
+    turn_penalty:
+        Optional extra cost if direction changes between successive moves. Each time 
+        we change direction in the global route, it is kind of like a proxy for via
+        cost, since changing direction in a detailed route has a cost due to directionality
+        rules on each layer. turn_penalty encourages straighter global routes. Defaulted to 0. 
+
+    Returns:
+
+    
+    """
+
+
 def A_star(start, goal): 
     # Below are some helper functions for A*. In the future, it might be beneficial to define these functions outside of A_star(). If A_star() is called
     # frequently, then defining these functions globally instead of locally will likely save some time (the functions will only be defined once rather than on each iteration).
