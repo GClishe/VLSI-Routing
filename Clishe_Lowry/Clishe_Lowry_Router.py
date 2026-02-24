@@ -1,6 +1,7 @@
 import time
 import heapq
 import math
+from bitarray install bitarray
 
 """
 Some notes on future implementation: 
@@ -32,7 +33,7 @@ class RoutingDB:
     """
     Creates a routing database that will be maintained as we go. To start with, it will be responsible for tracking
     grid occupancy per (x,y,layer), storing committed net routes (in case we need to rip them up), and checking for 
-    legality and cost. 
+    legality, cost, and congestion. 
     
     """
     def __init__(self, grid_size: int, num_layers: int, tile_size: int = 10):
@@ -43,6 +44,9 @@ class RoutingDB:
         # now we create the detailed occupancy grid. we could store occupancy details in a 3D array (each cell indexed with occ[layer][x][y]), but
         # this would be extremely inefficient. Instead, we can flatten everything to a 1D array and find a mapping between (layer,x,y) to a single integer
         # index. The mapping idx = (layer * W + x) * W + y does exactly that. Layers are stored sequentially and in row-major order.
+        N = num_layers * self.grid_size * self.grid_size          # N computes the total number of bits we need to store.
+        self.occ = bitarray(N)                          # creates a bitarray of size N
+        self.occ.setall(0)                              # initializes all bits to 0
 
         # we now need to figure out how many tiles will be present in global routing.
         # with a tile size of 10, a grid with grid_size of 100 will have 10 tiles per row.
@@ -69,7 +73,8 @@ class RoutingDB:
 
     def is_free(self, x: int, y: int, layer: int) -> bool:
         # checks whether (x,y,layer) is usable (not blocked)
-        pass
+        idx = (layer * self.grid_size + x) * self.grid_size + y         # converts (x,y,layer) coordinate to a 1D index 
+        return not self.occ[idx]                                        # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. 
 
     def via_allowed(self, x: int, y: int, layer: int) -> bool:
         # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
