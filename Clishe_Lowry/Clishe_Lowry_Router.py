@@ -1,7 +1,7 @@
 import time
 import heapq
 import math
-from bitarray install bitarray
+from bitarray import bitarray
 
 """
 Some notes on future implementation: 
