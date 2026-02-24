@@ -28,6 +28,57 @@ I want there to be a distinction between global routing and detailed routing. Th
 
 """
 
+class RoutingDB:
+    """
+    Creates a routing database that will be maintained as we go. To start with, it will be responsible for tracking
+    grid occupancy per (x,y,layer), storing committed net routes (in case we need to rip them up), and checking for 
+    legality and cost. 
+    
+    """
+    def __init__(self, grid_size: int, num_layers: int, tile_size: int = 10):
+        self.grid_size  = grid_size             # size of the detailed grid
+        self.num_layers = num_layers            # number of routing layers
+        self.tile_size  = tile_size             # size of the global routing tiles
+
+    def in_bounds(self, x: int, y: int) -> bool:
+        # returns true if the provided coordinate is in bounds
+        pass
+
+    def get_tile(self, x: int, y: int) -> tuple[int,int]:
+        # returns the tile indices for the provided coordinate. This is the global routing tile that
+        # the selected coordinate lies in. I expect that this will be helpful for global routing and 
+        # congestion checks
+        pass
+
+    def is_free(self, x: int, y: int, layer: int) -> bool:
+        # checks whether (x,y,layer) is usable (not blocked)
+        pass
+
+    def via_allowed(self, x: int, y: int, layer: int) -> bool:
+        # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
+        pass
+
+    def commit_route(self, net_name:str, path: list[tuple[int, int, int]]):
+        # commit a detailed route to the database. Paths are lists of (x,y,layer) pairs.
+        # note that the final export will have a different path structure
+        pass
+
+    def rip_up(self, net_name: str):
+        # removes a previously committed route
+        pass
+
+    def congestion_penalty(self, x: int, y: int) -> float:
+        # returns the congestion penalty for a detailed cell. I do not know how this will be implemented. May be removes later
+        pass
+
+    def step_cost(self, x: int, y: int, layer: int, nx: int, ny: int, nlayer: int) -> float:
+        # computes incremental cost for moving from (x,y,layer) to (nx,ny,nlayer)
+        # this will be helpful if we decide to introduce costs for making specific moves.
+        # for example, if a step always has a cost of 1, we can just return 1. But if nlayer changes,
+        # we can add 2 to the cost. Or we can impose penalties for bends somehow (though this might 
+        # require knowing last cell coords, not sure yet).
+        pass
+
 
 #pasting an example netlist for testing purposes. Will delete later. 
 netlist = {   'grid_size': 100,
@@ -48,7 +99,7 @@ def dist(c1, c2):
         x2,y2 = c2     # unpacks goal coordinates
         return abs(x1-x2) + abs(y1-y2)
 
-def create_routing_order(netlist):
+def create_routing_order(netlist: dict) -> list[str]:
     # For now, I will choose the order exclusively by manhattan length, but future implementations might look at congestion as well.
     # One option is to compute length for each net and then sort a list of length,net_name tuples by their length, but this would be O(n) + O(nlogn).
     # This will almost certainly not be the bottleneck for this algorithm, but we might as well try to make things efficient from the start. A better 
