@@ -372,12 +372,23 @@ def A_star(
         cost += congestion_weight * routing_db.tile_cong[nx,ny]     # added cost for entering congested tile
 
         move_dir = (nx - x, ny - y)                                 # move direction determined by a tuple. (-1, 0) means a leftward move, (0,1) means an upward move, etc.
-        if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred.
+        if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred. (0,0) included for start tile. 
             cost += turn_penalty
 
         return cost, move_dir
 
+    g = {start_tile: 0.0}                                            # initializing the g dictionary. Each cell other than the start will be initialized to infinity 
 
+    open_set = []
+    heapq.heappush(open_set, (h(start_tile, goal_tile), start_tile)) # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
+
+    # Initialize an unordered set of nodes already expanded (popped and processed). With a consistent heuristic, once a node is expanded its best g is final, so we never expand it again. This is needed if we allow duplicates in open_set (we do)
+    closed = set()                  
+
+    came_from = {start_tile: None}       # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
+    dir_from = {start_tile: (0,0)}       # initializes dir_frmo dict that stores the direction used to arrive at each tile. See step_cost for how the tuple corresponds to direction
+
+    while open_set:
 
 
 
