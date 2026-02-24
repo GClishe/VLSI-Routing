@@ -31,40 +31,54 @@ I want there to be a distinction between global routing and detailed routing. Th
 
 class RoutingDB:
     """
-    Creates a routing database that will be maintained as we go. To start with, it will be responsible for tracking
-    grid occupancy per (x,y,layer), storing committed net routes (in case we need to rip them up), and checking for 
-    legality, cost, and congestion. 
+    Routing database for detailed/global routing bookkeeping.
+
+    The responsibilities of this database are as follows:
+        - Tracks detailed grid occupancy per (x, y, layer) using a 1D bitarray (each layer stored sequentially and in row-major order)
+        - Stores each committed net route so that they can be ripped up later if necessary
+        - Tracks a sense of global-tile congestion by dividing the detailed grid into tiles and keeping track of how many committed routes pass through each tile
+        - Some helper functions/utilities, such as: 
+            - coordinate/index transformation for conversions bewteeen (x, y, layer) and 1D occupancy grid index
+            - bounds checks
+            - checking if a particular cell is occupied
+            - incremental move cost, which starts with a base cost of 1 and increments with vias and penalties due to congestion. May also later include added costs for bends and for leaving global-routing corridor
+
+    This class does not enforce layer-direction legality (yet). It is more likely that this will be enforced in neighbor generation within A*.
     
     """
     def __init__(self, grid_size: int, num_layers: int, tile_size: int = 10):
-        self.grid_size  = grid_size             # size of the detailed grid
-        self.num_layers = num_layers            # number of routing layers
-        self.tile_size  = tile_size             # size of the global routing tiles
+        """
+        Parameters:
 
-        # now we create the detailed occupancy grid. we could store occupancy details in a 3D array (each cell indexed with occ[layer][x][y]), but
-        # this would be extremely inefficient. Instead, we can flatten everything to a 1D array and find a mapping between (layer,x,y) to a single integer
-        # index. The mapping idx = (layer * W + x) * W + y does exactly that. Layers are stored sequentially and in row-major order.
+        grid_size: int
+            Detailed routing grid width & height. Grid is a square        
+        num_layers: int
+            Number of routing layers reperesented in the database. M1 is likely not included here since M1 is not available for routing.
+        tile_size: int
+            Global routing tile dimension in terms of detailed-grid cells. Used for congestion bookkeeping and global-route guidance. 
+        """
+        self.grid_size  = grid_size   
+        self.num_layers = num_layers  
+        self.tile_size  = tile_size   
+
+        # Conceptually, we want to have a 3D grid, each cell accessed by occ[layer][x][y], but this is memory-heavy. Instead, we flatten (layer,x,y) into a single index on a bitarray. 
         N = num_layers * self.grid_size * self.grid_size          # N computes the total number of bits we need to store.
-        self.occ = bitarray(N)                          # creates a bitarray of size N
-        self.occ.setall(0)                              # initializes all bits to 0
+        self.occ = bitarray(N)                                    # creates a bitarray of size N
+        self.occ.setall(0)                                        # initializes all bits to 0
 
-        # we now need to figure out how many tiles will be present in global routing.
-        # with a tile size of 10, a grid with grid_size of 100 will have 10 tiles per row.
-        # if the tiles of our specified size do not cleanly fit in the grid, we use ceiling function to ensure
-        # that edge cells are still included in a tile, even if those tiles are smaller than the rest (they will be clipped by in_bounds checks).
+        # Number of tiles per side for global grid. Ceil allows for edges to be assigned to tile even if tile_size does not divide grid_size cleanly. Those edge tiles are effectively smaller/clipped by boundary checks. 
         self.num_tiles = math.ceil(grid_size/tile_size)
 
-        # now we implement global routing tile congestion ideas. the congestion of a tile is how many nets have a route that passes through the tile.
-        # congestion value is initialized to 0 for all tiles
-        self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)]
+        self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)] # 2D array tracking tile congestion. tile_cong[tx][ty] reports how many committed nets pass through the tile (tx,ty)
 
-        self.net_routes = {}        # dict that contains net_name -> list of bitarray indices for cells on that net
+        self.net_routes = {}                                                                 # dict that contains net_name -> list of bitarray indices for cells on that net
               
     def coordinate_to_idx(self, x: int, y: int, layer: int) -> int:
-        # helper function to convert (x,y,layer) to occ index.
+        """ Convert (x,y,layer) to 1D occupancy array index """
         return (layer * self.grid_size + x) * self.grid_size + y 
     
     def idx_to_coordinate(self, idx: int) -> tuple[int, int, int]:
+        """ Convert 1D occupancy array index to (x,y,layer) coordinate """
         layer = idx // (self.grid_size * self.grid_size)
         rem = idx % (self.grid_size * self.grid_size)
         x = rem // self.grid_size
@@ -72,52 +86,85 @@ class RoutingDB:
         return (x, y, layer)
 
     def in_bounds(self, x: int, y: int, layer: int) -> bool:
-        # returns true if the provided coordinate is in bounds (within grid and on correct metal layer)
+        """ Return true if (x, y, layer) lies within the tracked grid/layer ranges"""
         return (0 <= x <= self.grid_size-1) and (0 <= y <= self.grid_size-1) and (0 <= layer < self.num_layers)
 
     def get_tile(self, x: int, y: int, layer: int) -> tuple[int,int]:
-        # returns the tile index for the provided coordinate. This is the global routing tile that
-        # the selected coordinate lies in. I expect that this will be helpful for global routing and 
-        # congestion checks. 
+        """
+        Return (tx,ty) coordinate for global tile containing the (x,y) detailed grid coordinate.
+        `layer` is accepted for convenience/validation, but tiling only requires (x,y).
+        """
         if not (self.in_bounds(x,y,layer)):
             raise ValueError("Coordinate given is not in-bounds.")
         
         return (x // self.tile_size, y // self.tile_size)
 
     def is_free(self, x: int, y: int, layer: int) -> bool:
-        # checks whether (x,y,layer) is usable (not blocked)
+        """
+        Return True if the (x,y,layer) location is in-bounds and unoccupied. Note that this is a purely blockage/occupancy
+        check. Directionality constraints imposed by metal layer (only horizontal/vertical wires allowed) should be handled
+        during neighbor generation in A*, not here. 
+        """
         if not self.in_bounds(x,y,layer):
             return False
-        idx = self.coordinate_to_idx(x,y,layer)                                                     # converts (x,y,layer) coordinate to a 1D index 
-        return (not self.occ[idx])                                                                  # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
+        idx = self.coordinate_to_idx(x,y,layer)             # converts (x,y,layer) coordinate to a 1D index 
+        return (not self.occ[idx])                          # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
 
     # TODO complete this function
     def via_allowed(self, x: int, y: int, layer: int) -> bool:
-        # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
+        """
+        Returns true if a via can be placed from `layer` to `layer+1` at (x,y).
+
+        Will check if both endpoints are in-bounds, if both endpoint cells are free, if layer+1 exists
+        """
         pass
 
     def tiles_on_net(self, net_name: str) -> list[tuple[int,int]]:
-        # returns the global-routing tiles (tx, ty) that the committed route for `net_name` passes through
+        """ 
+        Return the list of (tx, ty) tiles touched by the committed route for `net_name`, in order of occurrence along the stored path
+        """
         cell_indices = self.net_routes.get(net_name)
         if not cell_indices:
             return []
 
-        tile_indices = []
+        tiles = []
         seen = set()
 
         for cell_idx in cell_indices:
-            x, y, layer = self.idx_to_coordinate(cell_idx)  # idx -> (x,y,layer)
-            tx, ty = self.get_tile(x, y, layer)             # (x,y,layer) -> (tx,ty)
+            x, y, layer = self.idx_to_coordinate(cell_idx)  # obtains (x,y,layer) coordinate associated with cell_idx and unpacks it into respective variables
+            tx, ty = self.get_tile(x, y, layer)             # those variables get passed into get_tile, which returns the tile containing that coordinate
 
             tile = (tx, ty)
-            if tile not in seen:
-                seen.add(tile)
-                tile_indices.append(tile)
+            if tile not in seen:                            # if we havent already included this tile in our list,
+                seen.add(tile)                              # add it to the list of tiles we have seen
+                tiles.append(tile)                          # and add it to the tiles list
 
-        return tile_indices
+        return tiles
+
+    def congestion_penalty(self, x: int, y: int) -> float:
+        """
+        Return an additive penalty for steping into (x,y) based on congestion.
+        penalty may be computed as alpha * tile_cong[tx][ty] or some kind of combination between that and a local density measure.
+        It should be kept cheap as it will be called many times.
+
+        Currently, no penalty for entering congested regions. 
+        """
+        return 0.0
 
     def commit_route(self, net_name: str, path: list[tuple[int, int, int]]):
-        # validity check
+        """
+        Commit a routed detailed path to the database.
+
+        parameters:
+        net_name:
+            Net identifier. Must not alerady be committed.
+        path:
+            List of (x,y,layer) points along the route, including endpoints.
+
+        In-bounds checks are performed on every point, occupancy bits are set for points on the path, rejecting collisions if 
+        the coordinate is already occupied, route is stored so that it can be ripped up later, and tile congestion is incremented once per unique 
+        tile touched by this path. 
+        """
         if net_name in self.net_routes:
             raise KeyError(f"{net_name} already committed")
         
@@ -152,31 +199,35 @@ class RoutingDB:
         return None                               # not necessary, but return None helps with readability
     
     def rip_up(self, net_name: str):
-        # removes a previously committed route
-        indices = self.net_routes[net_name]             # gets the list of indices for cells on the net
+        """
+        Remove a previously committed route.
+        
+        Occupancy bits are cleared for the net's stored path, tile congestion is decremented by one for each tile the net touched, and the stored route entry is deleted. 
+        """
+        # clearing occupancy
+        indices = self.net_routes[net_name]            
         for idx in indices:                 
-            self.occ[idx] = 0                           # sets that list element to 0
+            self.occ[idx] = 0                           
         
         affected_tiles = self.tiles_on_net(net_name)    # gets the tiles that this net passed through
 
-        for (tx, ty) in affected_tiles:                     # subtracts 1 from the congestion value of each net that was ripped up
+        # decrementing tile congestion
+        for (tx, ty) in affected_tiles:         
             if self.tile_cong[tx][ty] == 0:
                 raise ValueError("Tile congestion value cannot be negative")
             else:
                 self.tile_cong[tx][ty] -= 1
         
-        self.net_routes.pop(net_name)                   # removes the net_name:indices item from the net_routes dict
-
-    def congestion_penalty(self, x: int, y: int) -> float:
-        # returns the congestion penalty for a detailed cell. I do not know how this will be implemented. May be removes later
-        pass
+        # remove route from the database
+        self.net_routes.pop(net_name)
 
     def step_cost(self, x: int, y: int, layer: int, nx: int, ny: int, nlayer: int) -> float:
-        # computes incremental cost for moving from (x,y,layer) to (nx,ny,nlayer)
-        # this will be helpful if we decide to introduce costs for making specific moves.
-        # for example, if a step always has a cost of 1, we can just return 1. But if nlayer changes,
-        # we can add 2 to the cost. Somehow this will also need to incorporate cost from leaving a cooridor 
-        # created by global routing. 
+        """
+        Incremental cost to move from (x,y,layer) to (nx,ny,nlayer) for usage inside A*. 
+        Wire step cost: 1 per grid move.
+        Via cost: 2 per adjacent-layer transition. Stacked vias are allowed.
+        Congestion penalty: computed above.
+        """
 
         cost = 1.0                                  # base cost. each step has a cost of at least 1
 
