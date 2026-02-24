@@ -369,7 +369,7 @@ def A_star(
         x, y   = current
         nx, ny = neighbor
         cost = 1.0                                                  # base cost for stepping one tile
-        cost += congestion_weight * routing_db.tile_cong[nx,ny]     # added cost for entering congested tile
+        cost += congestion_weight * routing_db.tile_cong[nx][ny]    # added cost for entering congested tile
 
         move_dir = (nx - x, ny - y)                                 # move direction determined by a tuple. (-1, 0) means a leftward move, (0,1) means an upward move, etc.
         if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred. (0,0) included for start tile. 
