@@ -310,7 +310,8 @@ def A_star(
         rules on each layer. turn_penalty encourages straighter global routes. Defaulted to 0. 
 
     Returns:
-
+    path_tiles:
+        list of (tx,ty) tiles from start to goal inclusive, or None if no path is found.
     
     """
 
