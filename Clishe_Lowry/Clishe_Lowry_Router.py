@@ -86,8 +86,10 @@ class RoutingDB:
 
     def is_free(self, x: int, y: int, layer: int) -> bool:
         # checks whether (x,y,layer) is usable (not blocked)
+        if not self.in_bounds(x,y,layer):
+            return False
         idx = self.coordinate_to_idx(x,y,layer)                                                     # converts (x,y,layer) coordinate to a 1D index 
-        return (not self.occ[idx]) and (self.in_bounds(x,y,layer))                                  # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
+        return (not self.occ[idx])                                                                  # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
 
     def via_allowed(self, x: int, y: int, layer: int) -> bool:
         # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
@@ -97,46 +99,52 @@ class RoutingDB:
         # commit a detailed route to the database. Paths are lists of (x,y,layer) pairs.
         # note that the final export will have a different path structure
         path_indices = []                                            # list containting the bitarray indices occupied by this net
-        for coord in path:
-            if not self.in_bounds(coord):
-                raise ValueError("Coordinate out of bounds.")
-            x, y, layer = coord                                      # unpacks coordinate tuple
-            idx = self.coordinate_to_idx(x,y,layer)
-            path_indices.append(idx)                                 # adds bitarray index to the path_indices list
-            self.occ[idx] = 1                                        # sets that cell as occupied
+        for (x, y, layer) in path:
+            if not self.in_bounds(x, y, layer):
+                raise ValueError(f"Coordinate out of bounds: {(x, y, layer)}")
 
-        self.net_routes[net_name] = path_indices                     # creates the net_routes item for this particular route
+            idx = self.coordinate_to_idx(x, y, layer)
+            path_indices.append(idx)
+            if self.occ[idx]: 
+                raise ValueError("collision")
+            self.occ[idx] = 1
+
+        self.net_routes[net_name] = path_indices                                             
         return None                                                  # not necessary, but return None helps with readability
 
-    def tiles_on_net(self, net_name: str) -> list[int]:
-        # returns the indices of the tiles that this net passes through
-        cell_indices = self.net_routes.get(net_name, [])            # gets the indices for that net. If the key doesnt exist, get an empty litst.
+    def tiles_on_net(self, net_name: str) -> list[tuple[int,int]]:
+        # returns the global-routing tiles (tx, ty) that the committed route for `net_name` passes through
+        cell_indices = self.net_routes.get(net_name)
+        if not cell_indices:
+            return []
 
-        tile_indices = []
-        tile_indices_lookup = set()
+        tile_indices: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
 
-        for cell_idx in cell_indices:                               # for each bitarray index corresponding to a cell on the net, 
-            x, y, layer = self.idx_to_coordinate(cell_idx)          # convert the index to a coordinate
-            tile_idx = self.get_tile(x, y, layer)                   # get the tile that the coordinate belongs to
-            if tile_idx not in tile_indices_lookup:                 # check if we have already included that tile.
-                tile_indices.append(tile_idx)                       # if not, we add it to the list
-                tile_indices_lookup.add(tile_idx)
-        
+        for cell_idx in cell_indices:
+            x, y, layer = self.idx_to_coordinate(cell_idx)  # idx -> (x,y,layer)
+            tx, ty = self.get_tile(x, y, layer)             # (x,y,layer) -> (tx,ty)
+
+            tile = (tx, ty)
+            if tile not in seen:
+                seen.add(tile)
+                tile_indices.append(tile)
+
         return tile_indices
 
     def rip_up(self, net_name: str):
         # removes a previously committed route
-        indices = self.net_routes['net_name']               # gets the list of indices for cells on the net
+        indices = self.net_routes[net_name]             # gets the list of indices for cells on the net
         for idx in indices:                 
             self.occ[idx] = 0                           # sets that list element to 0
         
         affected_tiles = self.tiles_on_net(net_name)    # gets the tiles that this net passed through
 
-        for tile in affected_tiles:                     # subtracts 1 from the congestion value of each net that was ripped up
-            if self.tile_cong[tile] == 0:
+        for (tx, ty) in affected_tiles:                     # subtracts 1 from the congestion value of each net that was ripped up
+            if self.tile_cong[tx][ty] == 0:
                 raise ValueError("Tile congestion value cannot be negative")
             else:
-                self.tile_cong[tile] -= 1
+                self.tile_cong[tx][ty] -= 1
         
         self.net_routes.pop(net_name)                   # removes the net_name:indices item from the net_routes dict
 
