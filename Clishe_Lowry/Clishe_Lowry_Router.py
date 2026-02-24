@@ -333,10 +333,10 @@ def A_star(
     
     def h(current, goal):
         """
-        Currently using manhattan distance as the heuristic. earlier dist() function was not written specifcally for detailed-grid coordinates, so we can use it again. 
-        since we include congestion/turn costs, we no longer have a consistent heuristic; it is now only admissible. h(n,goal) can not be greater than the actual cost
-        of reaching the goal from n. However, if we consider a a neighbor cell of n (call it n'), it is now possible for c(n,n') + h(n',goal) to be greater than h(n,goal),
-        which violates the consistenty requirement.
+        Currently using manhattan distance as the heuristic. This heuristic is consistent. Our step cost is 1 + nonnegative 
+        congestion + nonnegative turn penalty, so the cost for each step is always at least one. Since Manhattan distance 
+        decreases by at most 1 per step, we have h(n,goal) <= c(n,n') + h(n',goal) for all neighbors n' of n, which is 
+        the condition that must be met for a consistent heuristic.
         """
         return dist(current, goal)
 
