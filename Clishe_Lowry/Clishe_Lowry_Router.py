@@ -60,6 +60,9 @@ class RoutingDB:
 
         self.net_routes = {}        # dict that contains net_name -> list of (x,y,layer) cells on that net
               
+    def coordinate_to_idx(self, x: int, y: int, layer: int) -> int:
+        # helper function to convert (x,y,layer) to occ index.
+        return (layer * self.grid_size + x) * self.grid_size + y 
 
     def in_bounds(self, x: int, y: int) -> bool:
         # returns true if the provided coordinate is in bounds
@@ -73,8 +76,8 @@ class RoutingDB:
 
     def is_free(self, x: int, y: int, layer: int) -> bool:
         # checks whether (x,y,layer) is usable (not blocked)
-        idx = (layer * self.grid_size + x) * self.grid_size + y         # converts (x,y,layer) coordinate to a 1D index 
-        return not self.occ[idx]                                        # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. 
+        idx = self.coordinate_to_idx(x,y,layer)                                                     # converts (x,y,layer) coordinate to a 1D index 
+        return (not self.occ[idx]) and (self.in_bounds(x,y)) and (0 <= layer < self.num_layers)     # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
 
     def via_allowed(self, x: int, y: int, layer: int) -> bool:
         # check whether via is allowed on (x,y) to go from layer `layer` to `layer+1`
