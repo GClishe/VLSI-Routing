@@ -134,11 +134,8 @@ class RoutingDB:
 
     def congestion_penalty(self, x: int, y: int) -> float:
         """
-        Return an additive penalty for steping into (x,y) based on congestion.
-        penalty may be computed as alpha * tile_cong[tx][ty] or some kind of combination between that and a local density measure.
-        It should be kept cheap as it will be called many times.
-
-        Currently, no penalty for entering congested regions. 
+        Return a penalty for entering congested tiles. Penalty is equal to a * util^p, where util 
+        is a measure of how occupied a tile is. a and p are values to tune. 
         """
         tx = x // self.tile_size
         ty = y // self.tile_size
