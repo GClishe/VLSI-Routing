@@ -83,6 +83,10 @@ class RoutingDB:
         self.occ = bitarray(N)                                    # creates a bitarray of size N
         self.occ.setall(0)                                        # initializes all bits to 0
 
+        # we do the same thing, but this array keeps track of occpancy for pins. We need all pin positions on m2 to be occupied before routing, but we dont want to occupy those positions in self.occ because A_star_detailed() would complain that endpoints are occupied. It is easiest to create a second occupancy array for pins alone. 
+        self.pin_occ = bitarray(N)
+        self.pin_occ.setall(0)
+
         # Number of tiles per side for global grid. Ceil allows for edges to be assigned to tile even if tile_size does not divide grid_size cleanly. Those edge tiles are effectively smaller/clipped by boundary checks. 
         self.num_tiles = math.ceil(grid_size/tile_size)
 
@@ -105,6 +109,12 @@ class RoutingDB:
     def in_bounds(self, x: int, y: int, layer: int) -> bool:
         """ Return true if (x, y, layer) lies within the tracked grid/layer ranges"""
         return (0 <= x <= self.grid_size-1) and (0 <= y <= self.grid_size-1) and (0 <= layer < self.num_layers)
+
+    def is_pin(self, x:int, y:int, layer:int) -> bool:
+        """ Returns True if x, y, layer is both in-bounds and is the position of an already placed pin."""
+        if not self.in_bounds(x,y,layer):
+            return False
+        return bool(self.pin_occ[self.coordinate_to_idx(x,y,layer)])
 
     def get_tile(self, x: int, y: int, layer: int) -> tuple[int,int]:
         """
@@ -475,9 +485,9 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
         print(f"Detailed A*: start/goal out of bounds: start={start}, goal={goal}")
         return None
     
-    # return empty route if start or goal are already occupied. This also shouldnt happen as long as all pins (for all nets) are placed in m2 before any routing is done
-    if not routing_db.is_free(*start) or not routing_db.is_free(*goal):
-        print(f"Detailed A*: start/goal not free: start={start}, goal={goal}")
+    # return empty route if start or goal are already occupied by wires (not pins)
+    if routing_db.occ[routing_db.coordinate_to_idx(*start)] or routing_db.occ[routing_db.coordinate_to_idx(*goal)]:
+        print(f"Detailed A*: start/goal occupied by previously committed wire: start={start}, goal={goal} ")
         return None
     
 
@@ -519,17 +529,31 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
             path.append(current)
         path.reverse()
         return path
+    
+    def cell_allowed(nx, ny, nl):
+        """Determines if a cell is allowed by peforming boundary checks, checking route occupancy array, and checking pin ocupancy array """
+        if not routing_db.in_bounds(nx, ny, nl):
+            return False
+        idx = routing_db.coordinate_to_idx(nx, ny, nl)
+
+        # check occupancy array for non-pins
+        if routing_db.occ[idx]:
+            return False
+
+        # checking occupancy array for pins. If it is in the pin array, check if it is one of the current net's pins
+        if routing_db.pin_occ[idx] and (nx, ny, nl) not in {start, goal}:
+            return False
+
+        return True
 
     def find_neighbors(node):
         x, y, layer = node
         if layer % 2 == 0:
-            candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]                # only vertical moves or vias on even layers
+            candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]     # only vertical moves or vias on even layers
         else: 
-            candidates = [(x+1, y, layer), (x-1, y, layer), (x, y, layer+1), (x, y, layer-1)]                # only horizontal moves or vias on odd layers
-
-        if routing_db.num_layers != num_layers:
-            raise ValueError("Number of layers must match with database.")                                  # routing_db.in_bounds() checks if `layer` is between 0 (inclusive) and routing_db.num_layers (not inclusive). This value must match with num_layers here. 
-        return [cell for cell in candidates if routing_db.in_bounds(*cell) and routing_db.is_free(*cell)]   # candidates must be in bounds and unoccupied to be a valid neighbor. 
+            candidates = [(x+1, y, layer), (x-1, y, layer), (x, y, layer+1), (x, y, layer-1)]     # only horizontal moves or vias on odd layers
+            
+        return [cell for cell in candidates if cell_allowed(*cell)]             # candidates must be in bounds and unoccupied to be a valid neighbor. 
     
     def step_cost(current, neighbor):
         x, y, layer = current
@@ -593,12 +617,11 @@ routing_db = RoutingDB(
                 num_layers=8,
                 tile_size=10)
 
-
-"""
-I probably need to add a loop here that goes through all pins in the netlist and occupies those coordinates on metal 2.
-If I do not do this, then A_star_detailed() might create a route on m2 that overlaps with the pins on a yet-to-be-placed 
-cell, which would result in that net never being routed. 
-"""
+# placing all pins in the netlist before routing takes place
+for net_name, net in netlist["nets"].items():
+    for (x, y) in net["pins"]:
+        idx = routing_db.coordinate_to_idx(x, y, 0)
+        routing_db.pin_occ[idx] = 1
 
 for net_name in routing_order:
     start_coord = netlist['nets'][net_name]['pins'][0]  # start_coord is the first pin in the 'pins' list
