@@ -510,6 +510,14 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
         """ Computes the penalty for stepping into the tile tx, ty"""
         if bands is None:
             return 0.0
+        
+        cap = (routing_db.tile_size * routing_db.tile_size) * routing_db.num_layers     # defines the capacity of a tile as its area times depth (in terms of detailed cells)
+        util = routing_db.tile_cong[tx][ty] / cap                                       # computes utilization by dividing the congestion (number of committed cells in tile) by its capacity
+
+        UTIL_THRESH = 0.02          # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the UTIL_THRESH threshold.
+        if util < UTIL_THRESH:
+            return 0.0
+
         t = (tx, ty)
         for d in range(max_band+1):         # goal is to find what band t belongs to
             if t in bands[d]:               # recall that bands[d] is a set for fast searching
