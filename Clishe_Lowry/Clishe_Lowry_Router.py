@@ -574,6 +574,71 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
     print(f"Detailed A*: no path found between {start} and {goal}.")
     return None
 
+def total_routing_cost_from_db(routing_db, return_per_net: bool = False):
+    """
+    Compute total routing cost across all nets in db.net_routes.
+
+    Wire unit cost is 1.0 per step and via unit cost is 2.0 per via.
+    Parameters:
+    return_per_net : bool
+        If True, returns (total_cost, per_net_dict).
+    strict : bool
+        If True, enforces that each step is either a via
+
+    Returns:
+    total_cost : float
+    per_net : dict[str, float]  (only if return_per_net=True)
+    """
+
+    WIRE_COST = 1.0
+    VIA_COST  = 2.0
+
+    total = 0.0
+    per_net = {}        # initializing per-net costs
+
+    for net_name, idx_path in routing_db.net_routes.items():            # grabs the net name and the path for that net
+        # if net_name is not routed, then idx_path will be None, in which case we set the cost to 0 and skip. 
+        if not idx_path:
+            per_net[net_name] = 0.0
+            continue
+
+        cost = 0.0
+        prev = routing_db.idx_to_coordinate(idx_path[0])                # to find the cost, we need to keep track of previous coordinate and current coordinate. previous coordinate initialized to the first one
+
+        for idx in idx_path[1:]:                                # starting the loop at the second coordinate, since previous coordinate is initialized to the first
+            cur = routing_db.idx_to_coordinate(idx)                 
+
+            # unpacking
+            x0, y0, l0 = prev
+            x1, y1, l1 = cur
+
+            # finding the change in x, y, and layer
+            dx = abs(x1 - x0)           
+            dy = abs(y1 - y0)
+            dl = abs(l1 - l0)
+
+            wire_len = dx + dy      # should be 1 or 0
+            via_len  = dl           # should be 1 or 0
+
+            # double checking that each move is either a wire step (wire length is 1) or a via step (via length is 1)
+            is_wire_step = (wire_len == 1) and (via_len == 0)
+            is_via_step  = (wire_len == 0) and (via_len == 1)
+            if not (is_wire_step or is_via_step):
+                raise ValueError(
+                    f"{net_name}: invalid step {prev} -> {cur} "
+                    f"(dx={dx}, dy={dy}, dl={dl})"
+                )
+
+            cost += WIRE_COST * wire_len
+            cost += VIA_COST  * via_len
+            prev = cur
+
+        # adding the cost of that net to per_net dict if we want the cost associated with only that net.
+        per_net[net_name] = cost
+        total += cost
+
+    return (total, per_net) if return_per_net else total            # returns either (total cost, per_net cost dict) or simply total cost if return_per_net is False
+
 """
 ========================================================================================
 BEGIN MAIN
