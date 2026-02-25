@@ -202,21 +202,37 @@ class RoutingDB:
         """
         Remove a previously committed route.
         
-        Occupancy bits are cleared for the net's stored path, tile congestion is decremented by one for each tile the net touched, and the stored route entry is deleted. 
+        Occupancy bits are cleared for the net's stored path, tile congestion is decremented by 
+        the number of occupied cells that this net contributed to each tile. 
         """
+        # sanity check
+        if net_name not in self.net_routes:
+            raise KeyError(f"{net_name} is not committed")
+    
+        indices = self.net_routes[net_name]     # indices for the cells on this net
+
+        # we need to recompute the contribution to tile congestion for `net_name` so that we can subtract it from the total congestion.
+        tile_counts = {}            # dict containing (tx,ty):count items where count tells how many detailed cells on net_name belong to tx,ty
+        for idx in indices:
+            x, y, layer = self.idx_to_coordinate(idx)
+            tx, ty = self.get_tile(x, y, layer)
+            tile_counts[(tx,ty)] = tile_counts.get((tx,ty),0) + 1  # incrementing tile count for (tx,ty)
+
         # clearing occupancy
-        indices = self.net_routes[net_name]            
         for idx in indices:                 
             self.occ[idx] = 0                           
         
         affected_tiles = self.tiles_on_net(net_name)    # gets the tiles that this net passed through
 
         # decrementing tile congestion
-        for (tx, ty) in affected_tiles:         
-            if self.tile_cong[tx][ty] == 0:
-                raise ValueError("Tile congestion value cannot be negative")
-            else:
-                self.tile_cong[tx][ty] -= 1
+        for (tx,ty), cnt in tile_counts.items():
+            new_val = self.tile_cong[tx][ty] - cnt      # new congestion value is the total congestion in the tile minus the contribution from `net_name`, which is being ripped up
+            if new_val < 0:
+                raise ValueError(
+                    f"Tile congestion would go negative at tile {(tx, ty)}: "
+                    f"{self.tile_cong[tx][ty]} - {cnt}"
+                )
+            self.tile_cong[tx][ty] = new_val
         
         # remove route from the database
         self.net_routes.pop(net_name)
