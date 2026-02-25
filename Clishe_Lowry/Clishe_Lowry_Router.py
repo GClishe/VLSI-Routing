@@ -2,6 +2,22 @@ import time
 import heapq
 import math
 from bitarray import bitarray
+from copy import deepcopy
+
+#from Rtest.Rtest_100_100 import data
+from Reval.Reval_100_400 import data
+
+#pasting an example netlist for testing purposes. Will delete later. 
+#data = {   'grid_size': 100,
+#    'nets': {   'NET_0': {   'length': 3,
+#                             'pins': [(99, 56), (99, 59)],
+#                             'type': 'LOCAL'},
+#                'NET_1': {   'length': 48,
+#                             'pins': [(5, 72), (44, 63)],
+#                             'type': 'MEDIUM'},
+#                'NET_2': {   'length': 52,
+#                             'pins': [(43, 74), (5, 60)],
+#                             'type': 'LONG'}}}
 
 """
 Some notes on future implementation: 
@@ -238,20 +254,6 @@ class RoutingDB:
 
         return cost
 
-
-#pasting an example netlist for testing purposes. Will delete later. 
-netlist = {   'grid_size': 100,
-    'nets': {   'NET_0': {   'length': 3,
-                             'pins': [(99, 56), (99, 59)],
-                             'type': 'LOCAL'},
-                'NET_1': {   'length': 48,
-                             'pins': [(5, 72), (44, 63)],
-                             'type': 'MEDIUM'},
-                'NET_2': {   'length': 52,
-                             'pins': [(43, 74), (5, 60)],
-                             'type': 'LONG'}}}
-
-
 def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
         x1,y1 = c1     # unpacks current coordinates
@@ -278,7 +280,7 @@ def create_routing_order(netlist: dict) -> list[str]:
 
     return flattened_buckets
 
-def A_star(
+def A_star_global(
         start,
         goal,
         routing_db,
@@ -420,140 +422,48 @@ def A_star(
 
 
 
-
-
-
 """
-GLOBAL ROUTE VISUALIZATION
-Below is code entirely written by ChatGPT, intended entirely for visualization of global routing (to ensure correctness of what is written thus far)
-
+========================================================================================
+BEGIN MAIN
+========================================================================================
 """
-import matplotlib.pyplot as plt
-from matplotlib import patches
-def visualize_global_route(net_name: str, pin_a, pin_b, grid_size: int, tile_size: int, tile_path: list[tuple[int, int]]):
-    """
-    Visualization:
-      - faint detailed gridlines
-      - thicker tile gridlines
-      - pins highlighted at detailed coords
-      - route tiles shaded darker (others left light)
-    """
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.set_aspect("equal")
-    ax.set_xlim(0, grid_size)
-    ax.set_ylim(0, grid_size)
-    ax.set_title(f"Global route (tiles) for {net_name}")
-
-    # ---- faint detailed gridlines (can be expensive for large grids; keep alpha low)
-    # For very large grid_size, consider disabling this loop.
-    for i in range(grid_size + 1):
-        ax.axhline(i, linewidth=0.3, alpha=0.08)
-        ax.axvline(i, linewidth=0.3, alpha=0.08)
-
-    # ---- stronger tile gridlines
-    for i in range(0, grid_size + 1, tile_size):
-        ax.axhline(i, linewidth=1.0, alpha=0.35)
-        ax.axvline(i, linewidth=1.0, alpha=0.35)
-
-    # ---- shade route tiles
-    route_set = set(tile_path or [])
-    num_tiles = math.ceil(grid_size / tile_size)
-
-    # draw a light tile background (optional, but makes route contrast clearer)
-    for tx in range(num_tiles):
-        for ty in range(num_tiles):
-            x0 = tx * tile_size
-            y0 = ty * tile_size
-            w = min(tile_size, grid_size - x0)
-            h = min(tile_size, grid_size - y0)
-            in_route = (tx, ty) in route_set
-            rect = patches.Rectangle(
-                (x0, y0),
-                w,
-                h,
-                fill=True,
-                alpha=0.18 if in_route else 0.03,  # route tiles darker
-                linewidth=0.0,
-            )
-            ax.add_patch(rect)
-
-    # ---- draw route tile outlines a bit stronger
-    if tile_path:
-        for (tx, ty) in tile_path:
-            x0 = tx * tile_size
-            y0 = ty * tile_size
-            w = min(tile_size, grid_size - x0)
-            h = min(tile_size, grid_size - y0)
-            rect = patches.Rectangle((x0, y0), w, h, fill=False, linewidth=2.0, alpha=0.7)
-            ax.add_patch(rect)
-
-    # ---- pins (detailed coords)
-    (x1, y1) = pin_a
-    (x2, y2) = pin_b
-    ax.scatter([x1 + 0.5], [y1 + 0.5], s=80, marker="s", zorder=5)
-    ax.scatter([x2 + 0.5], [y2 + 0.5], s=80, marker="s", zorder=5)
-    ax.text(x1 + 1.0, y1 + 1.0, "PIN_A", fontsize=10, zorder=6)
-    ax.text(x2 + 1.0, y2 + 1.0, "PIN_B", fontsize=10, zorder=6)
-
-    # ---- cosmetics
-    ax.set_xlabel("x (detailed cells)")
-    ax.set_ylabel("y (detailed cells)")
-    ax.invert_yaxis()  # optional: comment out if you prefer y-up
-
-    plt.show()
 
 
-def run_first_net_global_route_test(netlist_dict: dict):
-    # 1) routing order
-    order = create_routing_order(netlist_dict)
-    if not order:
-        raise ValueError("create_routing_order() returned empty list.")
-    first_net = order[0]
+netlist = deepcopy(data)
 
-    # 2) instantiate RoutingDB (only need 1 layer for tile routing as written)
-    grid_size = netlist_dict["grid_size"]
-    tile_size = 10  # match your RoutingDB default unless you want to override
-    rdb = RoutingDB(grid_size=grid_size, num_layers=1, tile_size=tile_size)
+routing_order: list[str] = create_routing_order(netlist)       # creates a routing order in the form of a list of net names
 
-    # 3) pick endpoints for first net (pins are (x,y); give layer=0 for get_tile validation)
-    pins = netlist_dict["nets"][first_net]["pins"]
-    if len(pins) != 2:
-        raise ValueError(f"{first_net} has {len(pins)} pins; this test assumes exactly 2.")
-    (x1, y1), (x2, y2) = pins
-    start = (x1, y1, 0)
-    goal = (x2, y2, 0)
+# instantiate the routing database
+routing_db = RoutingDB(
+                grid_size=netlist['grid_size'], 
+                num_layers=9,
+                tile_size=10)
 
-    # 4) global route on tile grid
-    tile_path = A_star(
-        start=start,
-        goal=goal,
-        routing_db=rdb,
-        endpoints_are_tiles=False,
-        congestion_weight=1.0,
-        turn_penalty=0.0,
-    )
+for net_name in routing_order:
+    start_coord = netlist['nets'][net_name]['pins'][0]  # start_coord is the first pin in the 'pins' list
+    goal_coord  = netlist['nets'][net_name]['pins'][1]  # goal_coord is the second pin in the 'pins' list
 
-    if tile_path is None:
-        print(f"No global route found for {first_net}.")
-        return
+    # if the net is long, we start with global routing
+    if netlist['nets'][net_name]['type'] == 'LONG': 
+        global_route = A_star_global(
+                            start               = start_coord,
+                            goal                = goal_coord,
+                            routing_db          = routing_db,
+                            endpoints_are_tiles = False,
+                            congestion_weight   = 1,
+                            turn_penalty        = 0
+                            )
+    else:
+        global_route = None     # detailed routing A_star takes global_route as a parameter, so if global routing does not occur, then we set the route to None
 
-    print(f"Routing order (first 10): {order[:10]}")
-    print(f"Selected net: {first_net}")
-    print(f"Pins: {pins}")
-    print(f"Tile path length: {len(tile_path)}")
-    print(f"Tile path (first 20): {tile_path[:20]}")
+    # begin detailed routing
+    detailed_route = A_star_detailed(
+                        start = start_coord,
+                        goal = goal_coord,
+                        routing_db = routing_db,
+                        global_route = global_route        
+                        )
+    
+    routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database, which automatically updates congestion
 
-    # 5) visualize
-    visualize_global_route(
-        net_name=first_net,
-        pin_a=pins[0],
-        pin_b=pins[1],
-        grid_size=grid_size,
-        tile_size=tile_size,
-        tile_path=tile_path,
-    )
-
-
-if __name__ == "__main__":
-    # Uses your example netlist unless you replace it with a real one.
-    run_first_net_global_route_test(netlist)
+print(routing_db.net_routes)               # prints the routes that were added in detailed routing
