@@ -3,6 +3,7 @@ import heapq
 import math
 from bitarray import bitarray
 from copy import deepcopy
+from collections import deque
 
 #from Rtest.Rtest_100_100 import data
 from Reval.Reval_100_400 import data
@@ -419,13 +420,76 @@ def A_star_global(
     print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
 
-def A_star_detailed(start, goal, routing_db, num_layers = 7):
+def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
+    """"
+    Returns a list of sets. bands[i] is a set of tiles at manhattan distance i from the corridor, where 0 <= i <= max_band.
+    Tiles beyond max_band are not included.
+    """
+    bands = [set() for _ in range(max_band+1)]
+    dist = [[None for _ in range(num_tiles)] for _ in range(num_tiles)]      # creates 2D grid matching the dimensions of the global placement grid; all entries initialized to None
+
+    q = deque()     # creating a deque (double ended queue). We use a deque for fast popping on the left and appending on the right.
+    for (tx, ty) in corridor_tiles:
+        if 0 <= tx < num_tiles and 0 <= ty < num_tiles:
+            dist[tx][ty] = 0            # all corridor tiles are a distance of 0 away from the corridor tiles (obviously)
+            q.append((tx,ty))   
+            bands[0].add((tx,ty))       # all cooridor tile coords are added to the set of cells a distance of 0 away from the corridor tiles
+    
+    # we are going to loop through q now. We start with the cells on the corridor, and we go in order of distance away from the corridor
+    while q:
+        tx, ty = q.popleft()            # returns and removes the element on the left end of the deque. Therefore, we start with the first element we added to q. 
+        d = dist[tx][ty]                # returns the value of the distance of tile (tx,ty) from the corridor. We start with tiles on the corridor, so d is 0 for the starting tiles
+        if d >= max_band:               # skip over tiles that are too far from the cooridor
+            continue
+
+        for (nx,ny) in [(tx+1, ty), (tx-1, ty), (tx, ty+1), (tx, ty-1)]:             # loop thru all neighbors of tile (tx, ty)
+            if 0 <= nx < num_tiles and 0 <= ny < num_tiles and dist[nx][ny] is None: # checks that (nx,ny) is in-bounds and that we haven't already looked at this tile 
+                dist[nx][ny] = d + 1                                                 # all neighbors *that we haven't already looked at* must be a further 1 tile away from the corridor
+                if d + 1 <= max_band:
+                    bands[d+1].add((nx,ny))                                          # if this tile is not too far away, then we add it to the corresponding bands set
+                q.append((nx,ny))                                                    # adding this cell to the end of q
+
+    return bands
+
+def A_star_detailed(start, goal, routing_db, global_route, num_layers):
     # we entirely omit m1 here. start and goal should begin on m2. Later on, I will add m21 vias to the start and end when exporting.
     # therefore, layer[0] is m2, layer[1] is m3, ... layer[7] is m9. Therefore, we can keep the logic where even layers are for vertical
     # wire segments and odd layers are for horizontal segments. 
 
-    def h(current, goal):
+    corridor_tiles = set(global_route) if global_route is not None else None
+    band_cost = [0.0, 2.0, 6.0, 12.0]       # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
+    max_band = len(band_cost) - 1           # the number of bands passed to build_corridor_bands depends on the num of elements in band_cost
+    bands = None                            # initializes bands with None. Will stay None if global routing did not occur. 
+    if corridor_tiles is not None:
+        bands = build_corridor_bands(corridor_tiles, routing_db.num_tiles, max_band=max_band)  
+
+    def corridor_penalty_for_tile(tx, ty):
+        """ Computes the penalty for stepping into the tile tx, ty"""
+        if bands is None:
+            return 0.0
+        t = (tx, ty)
+        for d in range(max_band+1):         # goal is to find what band t belongs to
+            if t in bands[d]:               # recall that bands[d] is a set for fast searching
+                return band_cost[d]     
         
+        return band_cost[max_band] + 5.0    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
+
+    def h(current, goal):
+        """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
+        x, y, layer = current
+        gx, gy, glayer = goal
+
+        dx = abs(x-gx)
+        dy = abs(y-gy)
+
+        manhattan_dist = dx + dy        # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
+
+        via_to_goal_lb  = abs(layer - glayer)   # lower bound for number of vias needed is the number of layers separating the two coordinates. 
+
+        # Additional vias will be required if dx and dy are nonzero AND glayer == layer. This is because we would need to switch layers to move in one of the directions to close the gap. However, I am unsure if we can add these extra vias to the lower bound without violating consistency. For that reason, I am going to only add lower bound for vias needed to traverse the layers between current and goal. 
+    
+        return manhattan_dist + 2.0*via_to_goal_lb
+
     def find_neighbors(current_cell):
         x, y, layer = current_cell
         if layer % 2 == 0:
@@ -437,6 +501,18 @@ def A_star_detailed(start, goal, routing_db, num_layers = 7):
             raise ValueError("Number of layers must match with database.")                                  # routing_db.in_bounds() checks if `layer` is between 0 (inclusive) and routing_db.num_layers (not inclusive). This value must match with num_layers here. 
         return [cell for cell in candidates if routing_db.in_bounds(*cell) and routing_db.is_free(*cell)]   # candidates must be in bounds and unoccupied to be a valid neighbor. 
     
+    def step_cost(current, neighbor):
+        x, y, layer = current
+        nx, ny, nlayer = neighbor
+        base_cost = routing_db.step_cost(x, y, layer, nx, ny, nlayer)       # computes the base cost of the move, which consists of 1.0 + 2*(number of layers traversed) + congestion penalty (for entering a congested region)
+
+        if global_route is None:
+            return base_cost                # no need to compute penalties associated with leaving the global route if the global route does not exist. 
+
+        tx = nx // routing_db.tile_size
+        ty = ny // routing_db.tile_size
+
+        return base_cost + corridor_penalty_for_tile(tx, ty)
 
 
 
@@ -454,7 +530,7 @@ routing_order: list[str] = create_routing_order(netlist)       # creates a routi
 # instantiate the routing database
 routing_db = RoutingDB(
                 grid_size=netlist['grid_size'], 
-                num_layers=9,
+                num_layers=8,
                 tile_size=10)
 
 for net_name in routing_order:
