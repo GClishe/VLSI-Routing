@@ -4,8 +4,9 @@ import math
 from bitarray import bitarray
 from copy import deepcopy
 from collections import deque
+from dataclasses import dataclass, field
 
-from Rtest.Rtest_1500_45000 import data
+from Rtest.Rtest_500_6000 import data
 #from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
@@ -19,6 +20,44 @@ from Rtest.Rtest_1500_45000 import data
 #                'NET_2': {   'length': 52,
 #                             'pins': [(43, 74), (5, 60)],
 #                             'type': 'LONG'}}}
+
+
+@dataclass      # dataclass decorator useful for classes like these whose entire purpose is holding data. It simply automatically generates boilerplate methods like __init__ so that we do not have to. 
+class RouterParams:
+    """
+    Throughout the routing procedure, there are various tuning knobs in many different places.
+    This RouterParams class is built to centralize all of these tuning knobs into one place.
+    These tuning knobs are passed as parameters into the RoutingDB class so that they need not 
+    be modified there. 
+    """
+    # geometry parameters
+    num_layers: int = 8
+    tile_size: int = 10
+
+    # cost model for wire steps and via steps. These should remain unchanged.
+    wire_step_cost: float = 1.0
+    via_cost: float = 2.0
+
+    # congestion penalty defined as alpha * util^p where util is the utilization percentage of the tile (number of occupied cells in the tile divided by total number of cells in the tile)
+    cong_alpha: float = 8.0
+    cong_p: float = 2.0
+
+    # global routing params
+    do_global_for_types: tuple[str, ...] = ("LONG",)   # alternative might be ("MEDIUM","LONG") if global routing is to be done on medium type nets
+    global_cong_weight: float = 0.002                  # global routing step cost defined as 1 + congestion_weight * tile_cong. tile_cong counts how many occupied cells are present in the tile, which may be large. therefore, global_cong_weight should be small
+    global_turn_penalty: float = 0.0                   # penalty for changing direction in global routing
+
+    # penalties associated with leaving global routing corridor while doing detailed routing
+    # field is used for corridor_band_cost because it is mutable; we need to ensure that different instances of the RouterParams class contain separate lists if we only wish to mutate corridor_band_cost for only one of the instances. It is not too necessary here, but it is good practice. 
+    corridor_band_cost: list[float] = field(default_factory=lambda: [0.0, 1.0, 3.0, 6.0])       # additional cost for stepping into tile bands a distance of idx away from the global route corridor
+    corridor_far_penalty: float = 3.0                  # penalty for entering cells very far from global route corridor is corridor_band_cost[-1] + corridor_far_penalty
+    corridor_util_thresh: float = 0.02                 # only penalize leaving corridor if util >= thresh
+
+    # --- robustness / retries ---
+    max_reroute_attempts: int = 3                      # how many times rerouting will occur
+    ripup_k: int = 10                                  # how many previously-routed nets to rip up on failure
+    relax_corridor_on_retry: bool = True               # disable corridor on retries
+    bump_cong_alpha_on_retry: float = 1.5              # multiply cong_alpha by this each retry. Determines how much congestion penalty increases each retry
 
 class RoutingDB:
     """
@@ -37,7 +76,7 @@ class RoutingDB:
     This class does not enforce layer-direction legality (yet). It is more likely that this will be enforced in neighbor generation within A*.
     
     """
-    def __init__(self, grid_size: int, num_layers: int, tile_size: int = 10):
+    def __init__(self, grid_size: int, params: RouterParams):
         """
         Parameters:
         grid_size: int
@@ -48,11 +87,12 @@ class RoutingDB:
             Global routing tile dimension in terms of detailed-grid cells. Used for congestion bookkeeping and global-route guidance. 
         """
         self.grid_size  = grid_size   
-        self.num_layers = num_layers  
-        self.tile_size  = tile_size   
+        self.num_layers = params.num_layers
+        self.tile_size  = params.tile_size
+        self.params     = params
 
         # Conceptually, we want to have a 3D grid, each cell accessed by occ[layer][x][y], but this is memory-heavy. Instead, we flatten (layer,x,y) into a single index on a bitarray. 
-        N = num_layers * self.grid_size * self.grid_size          # N computes the total number of bits we need to store.
+        N = self.num_layers * self.grid_size * self.grid_size          # N computes the total number of bits we need to store.
         self.occ = bitarray(N)                                    # creates a bitarray of size N
         self.occ.setall(0)                                        # initializes all bits to 0
 
@@ -61,7 +101,7 @@ class RoutingDB:
         self.pin_occ.setall(0)
 
         # Number of tiles per side for global grid. Ceil allows for edges to be assigned to tile even if tile_size does not divide grid_size cleanly. Those edge tiles are effectively smaller/clipped by boundary checks. 
-        self.num_tiles = math.ceil(grid_size/tile_size)
+        self.num_tiles = math.ceil(grid_size/self.tile_size)
 
         self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)] # 2D array tracking tile congestion. tile_cong[tx][ty] reports how many committed nets pass through the tile (tx,ty)
 
@@ -146,10 +186,10 @@ class RoutingDB:
 
         # congestion penalty is exponential; penalty = alpha * util^p. at low util, congestion penalty is near zero, grows faster as util rises
         # these values should be tuned
-        alpha = 8.0
-        p = 2.0
+        a = self.params.cong_alpha
+        p = self.params.cong_p
 
-        return alpha * (util ** p)
+        return a * (util ** p)
 
     def commit_route(self, net_name: str, path: list[tuple[int, int, int]]):
         """
@@ -244,11 +284,9 @@ class RoutingDB:
         Via cost: 2 per adjacent-layer transition. Stacked vias are allowed.
         Congestion penalty: computed above.
         """
-
-        cost = 1.0                                  # base cost. each step has a cost of at least 1
-
+        cost = self.params.wire_step_cost           # base cost. each step has a cost of at least 1
         if layer != nlayer:
-            cost += 2.0 * abs(nlayer - layer)       # vias cost 2 for each layer traversal. Since we can stack vias, we need to compute how many layers are traversed. 
+            cost += self.params.via_cost * abs(nlayer - layer)       # vias cost 2 for each layer traversal. Since we can stack vias, we need to compute how many layers are traversed. 
 
         cost += self.congestion_penalty(nx, ny)     # add a congestion penalty
 
@@ -293,9 +331,8 @@ def A_star_global(
         start,
         goal,
         routing_db,
-        endpoints_are_tiles: bool = False,
-        congestion_weight: float = 1.0,
-        turn_penalty: float = 0.0
+        params: RouterParams,
+        endpoints_are_tiles: bool = False
 ):
     """
     A* search on global tile grid. This is for the tile grid only (global routing). Detailed
@@ -380,11 +417,11 @@ def A_star_global(
         x, y   = current
         nx, ny = neighbor
         cost = 1.0                                                  # base cost for stepping one tile
-        cost += congestion_weight * routing_db.tile_cong[nx][ny]    # added cost for entering congested tile
+        cost += params.global_cong_weight * routing_db.tile_cong[nx][ny]    # added cost for entering congested tile
 
         move_dir = (nx - x, ny - y)                                 # move direction determined by a tuple. (-1, 0) means a leftward move, (0,1) means an upward move, etc.
         if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred. (0,0) included for start tile. 
-            cost += turn_penalty
+            cost += params.global_turn_penalty
 
         return cost, move_dir
 
@@ -459,7 +496,7 @@ def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
 
     return bands
 
-def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[tuple[int,int,int]]:
+def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams) -> list[tuple[int,int,int]]:
     """
     Uses A* search on the detailed routing grid to find a detailed route between start and goal.
     Even layers (0, 2, 4, 6) allow only vertical moves;
@@ -478,11 +515,7 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
 
     Returns path: list[(x,y,layer)] from start to goal inclusive, or None if unroutable
         
-    """
-    # raise an error if mismatch in layer num
-    if routing_db.num_layers != num_layers:
-        raise ValueError("Number of layers must match with database")
-    
+    """    
     # raise an error if coordinates are missing `layer`
     if len(start) != 3 or len(goal) != 3:
         raise ValueError("Bad coordinate format. Ensure that start and goal have dimensions (x, y, layer)")
@@ -500,7 +533,7 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
 
     # implementing corridor penalty machinery if global routes is present
     corridor_tiles = set(global_route) if global_route is not None else None
-    band_cost = [0.0, 2.0, 6.0, 12.0]       # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
+    band_cost = params.corridor_band_cost   # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
     max_band = len(band_cost) - 1           # the number of bands passed to build_corridor_bands depends on the num of elements in band_cost
     bands = None                            # initializes bands with None. Will stay None if global routing did not occur. 
     if corridor_tiles is not None:
@@ -514,7 +547,7 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
         cap = (routing_db.tile_size * routing_db.tile_size) * routing_db.num_layers     # defines the capacity of a tile as its area times depth (in terms of detailed cells)
         util = routing_db.tile_cong[tx][ty] / cap                                       # computes utilization by dividing the congestion (number of committed cells in tile) by its capacity
 
-        UTIL_THRESH = 0.02          # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the UTIL_THRESH threshold.
+        UTIL_THRESH = params.corridor_util_thresh          # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the UTIL_THRESH threshold.
         if util < UTIL_THRESH:
             return 0.0
 
@@ -523,7 +556,7 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
             if t in bands[d]:               # recall that bands[d] is a set for fast searching
                 return band_cost[d]     
         
-        return band_cost[max_band] + 5.0    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
+        return band_cost[max_band] + params.corridor_far_penalty    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
 
     def h(current, goal):
         """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
