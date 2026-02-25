@@ -19,6 +19,9 @@ import numpy as np
 import pprint
 import time
 
+#Set RNG Seed
+rng = np.random.default_rng(masterSeed)
+
 #Format data from the library file to be easier to deal with
 data = getattr(__import__(f'{folderName}.{dataName}', fromlist = ['data']), 'data')     #Import net list data
 gridSize = data['grid_size']        #Extract grid size
@@ -37,10 +40,25 @@ layoutGrid = np.full((gridSize, gridSize, numLayers, 5), -1, dtype = np.int32) #
 
 
 #Functions
-def netCostStartToCell (x: int, y: int, z:int, net: int) -> int:  #Find the actual cost of a net up until a given cell
-    #Look at the layoutGrid location to get net and segment (use net currently searching variable in layoutGrid)
+def netCostStartToCell (x: int, y: int, z:int, net: int, seg: int) -> int:  #Find the actual cost of a net up until a given cell
+    #Need net and segment because this can be called during layoutGrid updates. Still need to make sure segList is updated first
     #Follow that segment back to the start (segments can only go in one direction), go to prior segment, repeat
-    cost = 1
+    #Handle first segment separately since you only do part of it
+    direction = segList[net][seg][2]
+    if direction == 0:          #Via
+        cost = 2 * abs(segList[net][seg][0][2] - z)
+    elif direction == 1:        #Hori
+        cost = abs(segList[net][seg][0][0] - x)
+    else:                       #Vert
+        cost = abs(segList[net][seg][0][1] - y)
+    for i in range(seg - 1, -1, -1):    #Step backwards through the segments
+        direction = segList[net][i][2]
+        if direction == 0:      #Via
+            cost = cost + 2 * abs(segList[net][i][1][2] - segList[net][i][0][2])
+        elif direction == 1:    #Hori
+            cost = cost + abs(segList[net][i][1][0] - segList[net][i][0][0])
+        else:                   #Vert
+            cost = cost + abs(segList[net][i][1][1] - segList[net][i][0][1])
     return cost
 
 def netCostCellToEnd(x: int, y: int, z:int, net:int) -> int:    #Find the predicted remaining cost of the net from this cell
@@ -52,12 +70,12 @@ def addVia (net: int, x:int, y:int, startLayer:int, endLayer:int):     #Adds a v
     seg = len(segList[net])-1
     segList[net].insert(seg, [[x, y, startLayer], [x, y, endLayer], 0])  #Put new segment before end
     global layoutGrid
-    layoutGrid[x][y][startLayer] = [net, seg, netCostCellToEnd(x,y, startLayer, net), netCostStartToCell(x, y, startLayer, net), net]  #Fill in starting layer
-    layoutGrid[x][y][endLayer] = [net, seg, netCostCellToEnd(x, y, endLayer, net), netCostStartToCell(x, y, endLayer, net), net]       #Fill in destination layer
+    layoutGrid[x][y][startLayer] = [net, seg, netCostCellToEnd(x,y, startLayer, net), netCostStartToCell(x, y, startLayer, net, seg), net]  #Fill in starting layer
+    layoutGrid[x][y][endLayer] = [net, seg, netCostCellToEnd(x, y, endLayer, net), netCostStartToCell(x, y, endLayer, net, seg), net]       #Fill in destination layer
     layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
     layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this via but the end takes priority
     if (x, y, endLayer) == (netList[net][2], netList[net][3], 1):   #If this via and the end via overlap
-        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net)
+        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
         layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
         netList[net][6] = cost                                      #Use this cost to update netList
 
@@ -67,27 +85,32 @@ def addHori (net: int, xStart:int, xEnd:int, y:int, z:int):     #Adds a horizont
     segList[net].insert(seg, [[xStart, y, z], [xEnd, y, z], 1])  #Put new segment before end
     global layoutGrid
     for x in range(xStart, xEnd + 1):   #Fill in cells
-        layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net), net]
+        layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
     layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
     layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
     if (xEnd, y, z) == (netList[net][2], netList[net][3], 1):       #If this segment and the end via overlap
-        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net)
+        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
         layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
         netList[net][6] = cost                                      #Use this cost to update netList
 
 def addVert (net: int, x:int, yStart: int, yEnd:int, z:int):     #Adds a horizontal segment to the segment list and layout grid. Updates cost
     global segList
     seg = len(segList[net])-1
-    segList[net].insert(seg, [[x, yStart, z], [x, yEnd, z], 1])  #Put new segment before end
+    segList[net].insert(seg, [[x, yStart, z], [x, yEnd, z], 2])  #Put new segment before end
     global layoutGrid
     for y in range(yStart, yEnd + 1):   #Fill in cells
-        layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net), net]
+        layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
     layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
     layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
     if (x, yEnd, z) == (netList[net][2], netList[net][3], 1):       #If this segment and the end via overlap
-        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net)
+
+        cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
         layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
         netList[net][6] = cost                                      #Use this cost to update netList
+
+#def costCellToLastSeg 
+#Trace the currently tracing variables back to the last segment in the net
+#Need to clear the currently tracing net variable for all cells at the end of each search
 
 
 
@@ -97,24 +120,37 @@ for i in range(netCount):  #Fill the empty lists with first and last segment as 
     segList[i] = [[[netList[i][0], netList[i][1], 0], [netList[i][0], netList[i][1], 1], 0], #First via from M1 to M2
                   [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
 for i in range(netCount):  #Manually add start and end vias for each net to layoutGrid
-    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 0, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 0, i), i]
-    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 1, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 1, i), i]
+    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 0, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 0, i, 0), i]
+    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 1, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 1, i, 0), i]
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 0, i), -1, i]
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
+
+#Attempt line / L pattern match. For lin
 
 #addVia(11, 12, 0, 1, 2)
 #addVert(11, 12, 0, 99, 2)
 #addVia(11,12,99,2,1)
 #addHori(11,2,12,99,1)
 
+addVert(0, 1, 0, 99, 1)
+addVia(50, 0, 1, 1, 2)
+addHori(50, 0, 99, 1, 2)
+addVia(50, 99, 1, 2, 1)
+
+
+
+#The addSegment functions are dumb. They will place the segment no matter what, and will complete the net if anything in the net touches the end via
+#Need to check locations for validity before doing addSegment, and the last segment placed must be one that overlaps with the end via
+#All the values in layout are usable for search as long as that first net value is left at -1 until final placement
+#The cost Start to Cell functiton depends on a continuous path of sequential and properly oriented segments including the target cell
+#Need to find a way to trace that temp net value back to the last placed segment, read its value, then add the distance between
 
 #start with patern router for shorts. Try all the orientations for that length (line, L, and 7. Z might be too much) on M2 and M3 (lines on both, L/7 span both layers as is)
 #Stat with length of 1 and lock any nets you can complete with this on M2. During the search, note the next lowest HPWL
 #On the next size step, you'll need to verify that nothing is obstructing the path
 #After shorts are done, do for longs. A* what's left. If I add rip up later, don't remove M1/M2 vias
-#Make sure to update end via segment ID in layout grid when adding segments
-#Can't trace backwards, the last segment placed must be one that overlaps with the end via
 
+#Optimize by only calculating predicted and actual cost on segment end points
 
 
 #Compute, format, and export results
@@ -155,3 +191,19 @@ for i in range(netCount):               #Populate net information
 output_content = "data = " + pprint.PrettyPrinter(indent=4).pformat(output)             # Format output data
 with open(f'Lowry_Clishe_{folderName}/{dataName}.py', 'w') as f:                        # Open export location
     f.write(output_content)                                                             # Export data
+
+
+#Plot
+print('Graphing results...')
+from mpl_toolkits import mplot3d
+import matplotlib.pyplot as plt
+
+fig = plt.figure()              #Initialize plot
+ax = plt.axes(projection='3d')  #Set it to 3D
+ax.set_zlim([1,9])              #Show M1-M9 on z axis
+colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan'] #List of line colors
+for i in range(netCount):       
+    for j in range(len(segList[i])):    #Plot each segment of each net. Use a set color for the whole net
+        ax.plot(np.linspace(segList[i][j][0][0], segList[i][j][1][0]), np.linspace(segList[i][j][0][1], segList[i][j][1][1]), np.linspace(segList[i][j][0][2], segList[i][j][1][2]) + 1, color=colors[i%10], label=f'Net {i}, Seg {j}')
+plt.savefig(f"Lowry_Clishe_{folderName}/{dataName}.png", dpi=300)   #Save plot
+plt.show()                      #Show plot
