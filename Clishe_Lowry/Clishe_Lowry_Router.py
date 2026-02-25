@@ -140,7 +140,19 @@ class RoutingDB:
 
         Currently, no penalty for entering congested regions. 
         """
-        return 0.0
+        tx = x // self.tile_size
+        ty = y // self.tile_size
+
+        d = self.tile_cong[tx][ty]      # grabs the congestion value for tile (tx,ty) (number of committed cells in that tile)
+        cap = self.tile_size * self.tile_size * self.num_layers         # creates a capacity value; determines how many cells can exist in (tx,ty)
+        util = d / cap                                       # defines utilization of the tile by normalizing the congestion value with the capacity of the tile
+
+        # congestion penalty is exponential; penalty = alpha * util^p. at low util, congestion penalty is near zero, grows faster as util rises
+        # these values should be tuned
+        alpha = 8.0
+        p = 2.0
+
+        return alpha * (util ** p)
 
     def commit_route(self, net_name: str, path: list[tuple[int, int, int]]):
         """
