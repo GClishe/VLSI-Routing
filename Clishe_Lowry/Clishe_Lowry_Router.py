@@ -419,6 +419,24 @@ def A_star_global(
     print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
 
+def A_star_detailed(start, goal, routing_db, num_layers = 7):
+    # we entirely omit m1 here. start and goal should begin on m2. Later on, I will add m21 vias to the start and end when exporting.
+    # therefore, layer[0] is m2, layer[1] is m3, ... layer[7] is m9. Therefore, we can keep the logic where even layers are for vertical
+    # wire segments and odd layers are for horizontal segments. 
+
+    def h(current, goal):
+        
+    def find_neighbors(current_cell):
+        x, y, layer = current_cell
+        if layer % 2 == 0:
+            candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]                # only vertical moves or vias on even layers
+        else: 
+            candidates = [(x+1, y, layer), (x-1, y, layer), (x, y, layer+1), (x, y, layer-1)]                # only horizontal moves or vias on odd layers
+
+        if routing_db.num_layers != num_layers:
+            raise ValueError("Number of layers must match with database.")                                  # routing_db.in_bounds() checks if `layer` is between 0 (inclusive) and routing_db.num_layers (not inclusive). This value must match with num_layers here. 
+        return [cell for cell in candidates if routing_db.in_bounds(*cell) and routing_db.is_free(*cell)]   # candidates must be in bounds and unoccupied to be a valid neighbor. 
+    
 
 
 
@@ -458,10 +476,10 @@ for net_name in routing_order:
 
     # begin detailed routing
     detailed_route = A_star_detailed(
-                        start = start_coord,
-                        goal = goal_coord,
-                        routing_db = routing_db,
-                        global_route = global_route        
+                        start         = start_coord,
+                        goal          = goal_coord,
+                        routing_db    = routing_db,
+                        global_route  = global_route        
                         )
     
     routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database, which automatically updates congestion
