@@ -5,8 +5,8 @@ from bitarray import bitarray
 from copy import deepcopy
 from collections import deque
 
-#from Rtest.Rtest_100_100 import data
-from Reval.Reval_1000_20000 import data
+from Rtest.Rtest_1500_45000 import data
+#from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -40,7 +40,6 @@ class RoutingDB:
     def __init__(self, grid_size: int, num_layers: int, tile_size: int = 10):
         """
         Parameters:
-
         grid_size: int
             Detailed routing grid width & height. Grid is a square        
         num_layers: int
@@ -179,14 +178,14 @@ class RoutingDB:
         self.net_routes[net_name] = path_indices
 
         # increment congestion in tile_cong
-        tile_set = set()
-        for idx in path_indices:
-            x, y, layer = self.idx_to_coordinate(idx)
-            tile = (x // self.tile_size, y // self.tile_size)
-            if tile not in tile_set:
-                tile_set.add(tile)
-                tx, ty = tile
-                self.tile_cong[tx][ty] += 1
+        tile_counts = {}
+        for idx in path_indices:                                        # looping through all the indices of cells that belong to the path
+            x, y, layer = self.idx_to_coordinate(idx)                   # getting the coordinates of those cells
+            tx, ty = (x // self.tile_size, y // self.tile_size)         # getting the tile coordinate for the cells
+            tile_counts[(tx, ty)] = tile_counts.get((tx, ty), 0) + 1    # incrementing tile_counts, which counts how many committed cells belong to this tile as a measure of congestion
+
+        for (tx, ty), cnt in tile_counts.items():
+            self.tile_cong[tx][ty] += cnt                               # updating the self.tile_cong data with the congestion values
 
         return None                               # not necessary, but return None helps with readability
     
@@ -691,3 +690,5 @@ for net_name in routing_order:
                         )
     
     routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database, which automatically updates congestion
+
+print(f"Total cost for this netlist is {total_routing_cost_from_db(routing_db)}")
