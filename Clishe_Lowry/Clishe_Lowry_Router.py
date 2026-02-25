@@ -6,7 +6,7 @@ from copy import deepcopy
 from collections import deque
 
 #from Rtest.Rtest_100_100 import data
-from Reval.Reval_100_400 import data
+from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -19,32 +19,6 @@ from Reval.Reval_100_400 import data
 #                'NET_2': {   'length': 52,
 #                             'pins': [(43, 74), (5, 60)],
 #                             'type': 'LONG'}}}
-
-"""
-Some notes on future implementation: 
-I want there to be a distinction between global routing and detailed routing. Therefore, I am thinking of implementing the workflow below:
-1) Extract pin coordinates for all nets to be routed. 
-2) Decide in some way on a routing order. Maybe start with longest first (by manhattan distance) or most constrained first (pins in dense regions, so more expected congestion)
-3) Create some kind of routing database and maintain it as routing occurs. It should contain information for each cell that describes blockages on that cell on a particular metal layer.
-   For example, a list (more likely an unordered set) with information such as (x,y,layer) that describes what layers are occuping the particular x,y coordinate. Ill need to think more on this.
-4) For each net, decide whether to run global routing first. If not, skip directly to detailed routing.
-5) Global routing: 
-    * Coarsen placement grid into tiles containing k*k cells
-    * Run 2D A* routing on the tile grid from the source tile to the target tile.
-    * If a tile contains many previously routed nets, maybe consider this tile as crowded and store some kind of congestion penalty to this tile in the database on step 3. 
-    * Maybe add turn penalties. Global routing is going to occur in 2D, but we know that if there are many turns, we need at least that many vias, so a turn penalty here is a kind of proxy for vias. 
-6) Convert global route into a corrdior on the detailed grid
-    * Expand the tile path from global routing into a set of preferred cells
-    * Add cost penalties for cells outside the corrdior
-7) Detailed Routing: 
-    * Route on a 3D grid (something like (x,y,layer)) across m2-m9 with pins on m1. 
-    * Legal moves will only be steps within the same metal layer in the preferred direction plus via moves between adjacent layers
-    * Final path must start and end with m1-m2 vias. Each cell hop will be 1 + addl' cost (from global routing corrdior. maybe additional costs will be added to congested cells).
-      Each via will add 2. 
-8) Put routed path into routing database from step 3. Add occupancy details, update congestion, that kind of thing. Clear global routing corrdiors. 
-9) If severe congestion or routing failures, rip up and reroute selected nets (the ones causing the blockage for example. Might need to rewatch this portion of the lecture (week 6) for additional info).
-
-"""
 
 class RoutingDB:
     """
@@ -552,7 +526,7 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
             candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]     # only vertical moves or vias on even layers
         else: 
             candidates = [(x+1, y, layer), (x-1, y, layer), (x, y, layer+1), (x, y, layer-1)]     # only horizontal moves or vias on odd layers
-            
+
         return [cell for cell in candidates if cell_allowed(*cell)]             # candidates must be in bounds and unoccupied to be a valid neighbor. 
     
     def step_cost(current, neighbor):
@@ -627,11 +601,14 @@ for net_name in routing_order:
     start_coord = netlist['nets'][net_name]['pins'][0]  # start_coord is the first pin in the 'pins' list
     goal_coord  = netlist['nets'][net_name]['pins'][1]  # goal_coord is the second pin in the 'pins' list
 
+    start = (start_coord[0], start_coord[1], 0)         # placing start_coord on m2
+    goal  = (goal_coord[0],  goal_coord[1],  0)         # placing goal_coord on m2
+
     # if the net is long, we start with global routing
     if netlist['nets'][net_name]['type'] == 'LONG': 
         global_route = A_star_global(
-                            start               = start_coord,
-                            goal                = goal_coord,
+                            start               = start,
+                            goal                = goal,
                             routing_db          = routing_db,
                             endpoints_are_tiles = False,
                             congestion_weight   = 1,
@@ -640,14 +617,12 @@ for net_name in routing_order:
     else:
         global_route = None     # detailed routing A_star takes global_route as a parameter, so if global routing does not occur, then we set the route to None
 
-    # begin detailed routing
     detailed_route = A_star_detailed(
-                        start         = start_coord,
-                        goal          = goal_coord,
+                        start         = start,
+                        goal          = goal,
                         routing_db    = routing_db,
-                        global_route  = global_route        
+                        global_route  = global_route,
+                        num_layers    = routing_db.num_layers        
                         )
     
     routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database, which automatically updates congestion
-
-print(routing_db.net_routes)               # prints the routes that were added in detailed routing
