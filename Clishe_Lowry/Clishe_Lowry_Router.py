@@ -544,7 +544,37 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[t
 
         return base_cost + corridor_penalty_for_tile(tx, ty)
 
+    # Below is the main A_star loop. It is identical to the A_star loop in the global routing case, except this time direction checking does not make up part of the move cost. Everything else is the same, so see comments in A_star_global for additional details. 
+    g = {start: 0.0}
 
+    open_set = []
+    heapq.heappush(open_set, (h(start, goal), start))
+
+    closed = set()
+    came_from = {start: None}
+
+    while open_set:
+        current = heapq.heappop(open_set)[1]
+
+        if current in closed:
+            continue
+
+        if current == goal:
+            return reconstruct_path(came_from, current)
+
+        closed.add(current)
+
+        for neighbor in find_neighbors(current):
+            tentative_g = g[current] + step_cost(current, neighbor)         # same as in global routing, but without direction checking
+
+            if tentative_g < g.get(neighbor, math.inf):
+                came_from[neighbor] = current
+                g[neighbor] = tentative_g
+                f_neighbor = tentative_g + h(neighbor, goal)
+                heapq.heappush(open_set, (f_neighbor, neighbor))
+
+    print(f"Detailed A*: no path found between {start} and {goal}.")
+    return None
 
 """
 ========================================================================================
