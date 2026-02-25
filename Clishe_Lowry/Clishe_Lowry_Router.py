@@ -58,7 +58,7 @@ class RoutingDB:
             - coordinate/index transformation for conversions bewteeen (x, y, layer) and 1D occupancy grid index
             - bounds checks
             - checking if a particular cell is occupied
-            - incremental move cost, which starts with a base cost of 1 and increments with vias and penalties due to congestion. May also later include added costs for bends and for leaving global-routing corridor
+            - incremental move cost, which starts with a base cost of 1 and increments with vias and penalties due to congestion. 
 
     This class does not enforce layer-direction legality (yet). It is more likely that this will be enforced in neighbor generation within A*.
     
@@ -126,15 +126,6 @@ class RoutingDB:
             return False
         idx = self.coordinate_to_idx(x,y,layer)             # converts (x,y,layer) coordinate to a 1D index 
         return (not self.occ[idx])                          # self.occ(idx) checks if the coordinate is occupied. If it is, the cell is not free. If it is not, the cell is free. Also performs bounds checks.
-
-    # TODO complete this function
-    def via_allowed(self, x: int, y: int, layer: int) -> bool:
-        """
-        Returns true if a via can be placed from `layer` to `layer+1` at (x,y).
-
-        Will check if both endpoints are in-bounds, if both endpoint cells are free, if layer+1 exists
-        """
-        pass
 
     def tiles_on_net(self, net_name: str) -> list[tuple[int,int]]:
         """ 
@@ -451,11 +442,46 @@ def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
 
     return bands
 
-def A_star_detailed(start, goal, routing_db, global_route, num_layers):
-    # we entirely omit m1 here. start and goal should begin on m2. Later on, I will add m21 vias to the start and end when exporting.
-    # therefore, layer[0] is m2, layer[1] is m3, ... layer[7] is m9. Therefore, we can keep the logic where even layers are for vertical
-    # wire segments and odd layers are for horizontal segments. 
+def A_star_detailed(start, goal, routing_db, global_route, num_layers) -> list[tuple[int,int,int]]:
+    """
+    Uses A* search on the detailed routing grid to find a detailed route between start and goal.
+    Even layers (0, 2, 4, 6) allow only vertical moves;
+    Odd layers (1, 3, 5, 7) allow only horizontal moves;
+    Via moves between adjacent layers at the same (x,y) position. 
 
+    This function assumes routing_db layers correspond to M2 thru M9, where layer=0 means M2
+    and layer=7 means M9. Start/goal pins from the netlist are provided as (x,y) pairs, but they 
+    are treated as (x,y,0). 
+
+    Cost breakdown is as follows: 
+        wire steps have base cost of 1,
+        vias have cost of 2 for adjacent-layer transitions,
+        optional congestion penalty (routing_db.congestion_penalty),
+        penalty for leaving global route corridor (if global route is provided).
+
+    Returns path: list[(x,y,layer)] from start to goal inclusive, or None if unroutable
+        
+    """
+    # raise an error if mismatch in layer num
+    if routing_db.num_layers != num_layers:
+        raise ValueError("Number of layers must match with database")
+    
+    # raise an error if coordinates are missing `layer`
+    if len(start) != 3 or len(goal) != 3:
+        raise ValueError("Bad coordinate format. Ensure that start and goal have dimensions (x, y, layer)")
+    
+    # return empty route if start or goal are not in-bounds (should never happen)
+    if not routing_db.in_bounds(*start) or not routing_db.in_bounds(*goal):
+        print(f"Detailed A*: start/goal out of bounds: start={start}, goal={goal}")
+        return None
+    
+    # return empty route if start or goal are already occupied. This also shouldnt happen as long as all pins (for all nets) are placed in m2 before any routing is done
+    if not routing_db.is_free(*start) or not routing_db.is_free(*goal):
+        print(f"Detailed A*: start/goal not free: start={start}, goal={goal}")
+        return None
+    
+
+    # implementing corridor penalty machinery if global routes is present
     corridor_tiles = set(global_route) if global_route is not None else None
     band_cost = [0.0, 2.0, 6.0, 12.0]       # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
     max_band = len(band_cost) - 1           # the number of bands passed to build_corridor_bands depends on the num of elements in band_cost
@@ -479,19 +505,23 @@ def A_star_detailed(start, goal, routing_db, global_route, num_layers):
         x, y, layer = current
         gx, gy, glayer = goal
 
-        dx = abs(x-gx)
-        dy = abs(y-gy)
-
-        manhattan_dist = dx + dy        # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
-
-        via_to_goal_lb  = abs(layer - glayer)   # lower bound for number of vias needed is the number of layers separating the two coordinates. 
+        manhattan_dist = abs(y-gy) + abs(x-gx)        # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
+        via_to_goal_lb  = abs(layer - glayer)         # lower bound for number of vias needed is the number of layers separating the two coordinates. 
 
         # Additional vias will be required if dx and dy are nonzero AND glayer == layer. This is because we would need to switch layers to move in one of the directions to close the gap. However, I am unsure if we can add these extra vias to the lower bound without violating consistency. For that reason, I am going to only add lower bound for vias needed to traverse the layers between current and goal. 
     
         return manhattan_dist + 2.0*via_to_goal_lb
+    
+    def reconstruct_path(came_from, current):
+        path = [current]
+        while came_from[current] is not None:
+            current = came_from[current]
+            path.append(current)
+        path.reverse()
+        return path
 
-    def find_neighbors(current_cell):
-        x, y, layer = current_cell
+    def find_neighbors(node):
+        x, y, layer = node
         if layer % 2 == 0:
             candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]                # only vertical moves or vias on even layers
         else: 
@@ -532,6 +562,13 @@ routing_db = RoutingDB(
                 grid_size=netlist['grid_size'], 
                 num_layers=8,
                 tile_size=10)
+
+
+"""
+I probably need to add a loop here that goes through all pins in the netlist and occupies those coordinates on metal 2.
+If I do not do this, then A_star_detailed() might create a route on m2 that overlaps with the pins on a yet-to-be-placed 
+cell, which would result in that net never being routed. 
+"""
 
 for net_name in routing_order:
     start_coord = netlist['nets'][net_name]['pins'][0]  # start_coord is the first pin in the 'pins' list
