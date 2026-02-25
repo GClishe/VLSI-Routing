@@ -261,24 +261,33 @@ def dist(c1, c2):
         return abs(x1-x2) + abs(y1-y2)
 
 def create_routing_order(netlist: dict) -> list[str]:
-    # For now, I will choose the order exclusively by manhattan length, but future implementations might look at congestion as well.
-    # One option is to compute length for each net and then sort a list of length,net_name tuples by their length, but this would be O(n) + O(nlogn).
-    # This will almost certainly not be the bottleneck for this algorithm, but we might as well try to make things efficient from the start. A better 
-    # way will be utilizing the fact that the max lenght of a net is not that big, even for the largest netlists. We can create buckets (list of lists),
-    # one for each possible net length, and then appending cell names to their corresponding bucket. This is faster because the max possible manhattan length
-    # is going to be 3000, since the largest grid we have is 1500x1500. 
-    # How routing order is determined will be revisited later depending on how many ripups and failures that we get. 
+    """
+    Orders nets for routing with the following priority: 
+    First priority is given to nets that require at least one turn (dx>0 AND dy=0).
+    Within each of the two classes (turn required/not required), prioritize long manhattan distance. 
+    """
 
     max_dist = 2 * netlist['grid_size']                      
-    buckets = [[] for _ in range(max_dist)]                  # initializes list [[], [], [], ..., []] of size max_dist
-    for net_name, data in netlist['nets'].items():
-        idx = (max_dist-1) - dist(*data['pins'])             # subtact the distance between the two pins in data['pins'] from the largest possible index to ensure correct ordering
-        buckets[idx].append(net_name)        
-    
-    # buckets now has the form [[],[],[NET_1],[NET_2,NET_3], ..., [NET_100]] or something along those lines. Now I want to simply flatten the list and return the result.
-    flattened_buckets = [subarray_element for subarray in buckets for subarray_element in subarray]         # now has the form list[str] instead of list[list[str]]
+    buckets_turn = [[] for _ in range(max_dist)]            # grouping for nets requiring a turn
+    buckets_straight = [[] for _ in range(max_dist)]        # grouping for nets that dont require a turn
 
-    return flattened_buckets
+    for net_name, data in netlist['nets'].items():
+        (x0, y0), (x1, y1) = data['pins']
+        dx = abs(x0-x1)
+        dy = abs(y0-y1)
+
+        d = dx + dy
+        idx = (max_dist-1) - d      # nets will be placed into the bucket corresponding to its length, where longest possible nets (length of max_dist) are placed in index 0; shortest lengths placed in the back.
+
+        if dx != 0 and dy != 0:
+            buckets_turn[idx].append(net_name)
+        else:
+            buckets_straight[idx].append(net_name)
+        
+    nets_with_turn = [n for bucket in buckets_turn for n in bucket]         # flattens the buckets_turn list
+    nets_without_turn = [n for bucket in buckets_straight for n in bucket]  # flattens the buckets_straight list\
+
+    return nets_with_turn + nets_without_turn          # nets with turn come first, ordered by length, then nets without turn are routed, ordered by length. 
 
 def A_star_global(
         start,
