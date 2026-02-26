@@ -751,6 +751,40 @@ def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tupl
             
     return picks[:k] # picks may have more than k nets if there were lots of nets in start/goal neighbors, so we only grab the first k. 
         
+def add_m1_vias_to_all_routes(routing_db, netlist):
+    """
+    Post-processing function that adds m1-m2 vias to start and end coordinates of each committed route on the database.
+    This function does not modify routing_db.occ or routing_db.net_routes, which are m2-m9 only. 
+
+    Returns routes_with_m1: dict[str, list[tuple[int,int,int]]], where each path is a list of (x,y,layer)
+    where layer=-1 means M1, layer=0 means M2, ..., 7 means M9.
+    """
+    # create a new routes dictionary, but this time each route will have m2-m1 vias at the start and end
+    routes_with_m1: dict[str, list[tuple[int, int, int]]] = {}
+
+    for net_name, idx_path in routing_db.net_routes.items():        # loop thru all routes in the database
+        # if the path is empty, skip it
+        if not idx_path:        
+            continue
+
+        coords = [routing_db.idx_to_coordinate(idx) for idx in idx_path]   # getting (x,y,layer) coordinates for all cells on the path
+
+        (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]              # get the start/goal pins for the net
+
+        # sanity checking that the first and last coordinates on the path (the pins) are on layer 0 (m2). We should be concerned if this check fails.
+        if coords[0][2] != 0 or coords[-1][2] != 0:
+            raise ValueError(
+                f"{net_name}: expected endpoints on M2 (layer=0), got start={coords[0]} end={coords[-1]}"
+            )
+
+        # creating coordinates for the new start and end points, which are on layer -1 (m1)
+        start_m1 = (coords[0][0], coords[0][1], -1)
+        end_m1   = (coords[-1][0], coords[-1][1], -1)
+
+        routes_with_m1[net_name] = [start_m1] + coords + [end_m1]       # adding the start and end points to the start and end of the list, respectively
+
+    return routes_with_m1
+
 """
 ========================================================================================
 BEGIN MAIN
