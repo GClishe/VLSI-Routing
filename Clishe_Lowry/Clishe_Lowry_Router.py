@@ -6,8 +6,8 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-from Rtest.Rtest_1500_50000 import data
-#from Reval.Reval_1000_20000 import data
+#from Rtest.Rtest_1500_50000 import data
+from Reval.Reval_1000_40000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -497,7 +497,17 @@ def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
 
     return bands
 
-def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: int, hard_corridor: bool) -> list[tuple[int,int,int]]:
+def build_allowed_tiles_from_bands(bands: list[set[tuple[int,int]]], band_limit: int) -> set[tuple[int,int]]:
+    """Bands built by build_corridor_bands flattened into a single set of allowed tiles"""
+    if bands is None:
+        return None
+    band_limit = min(band_limit, len(bands) - 1)
+    allowed = set()
+    for d in range(band_limit + 1):
+        allowed |= bands[d] 
+    return allowed
+
+def A_star_detailed(start, goal, routing_db, global_route, params, band_limit) -> list[tuple[int,int,int]]:
     """
     Uses A* search on the detailed routing grid to find a detailed route between start and goal.
     Even layers (0, 2, 4, 6) allow only vertical moves;
@@ -537,19 +547,16 @@ def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: i
     sx, sy, sl = start
     gx, gy, gl = goal
 
-    # we want to create a bounding box in which we will restrict the detailed route. Box margin increases after each failure, which allows bounding box to grow.
-    xmin = max(0, min(sx,gx) - box_margin)                              # using max (and min on next line) to clip bounding box to the boundaries of the placement grid
-    xmax = min(routing_db.grid_size - 1, max(sx, gx) + box_margin)
-    ymin = max(0, min(sy, gy) - box_margin)
-    ymax = min(routing_db.grid_size - 1, max(sy, gy) + box_margin)
-
     # implementing corridor penalty machinery if global routes is present
     corridor_tiles = set(global_route) if global_route is not None else None
     band_cost = params.corridor_band_cost   # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
     max_band = len(band_cost) - 1           # the number of bands passed to build_corridor_bands depends on the num of elements in band_cost
     bands = None                            # initializes bands with None. Will stay None if global routing did not occur. 
+    allowed_tiles = None
     if corridor_tiles is not None:
         bands = build_corridor_bands(corridor_tiles, routing_db.num_tiles, max_band=max_band)  
+        allowed_tiles = build_allowed_tiles_from_bands(bands, band_limit)
+
 
     def corridor_penalty_for_tile(tx, ty):
         """ Computes the penalty for stepping into the tile tx, ty"""
@@ -569,10 +576,6 @@ def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: i
                 return band_cost[d]     
         
         return band_cost[max_band] + params.corridor_far_penalty    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
-
-    def in_bbox(x, y):
-        """ Checks if coordinate is in the bounding box"""
-        return (xmin <= x <= xmax) and (ymin <= y <= ymax)
 
     def h(node_idx):
         """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
@@ -601,8 +604,6 @@ def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: i
         """Determines if a cell is allowed by peforming boundary checks, checking route occupancy array, and checking pin ocupancy array """
         if not routing_db.in_bounds(nx, ny, nl):
             return False
-        if not in_bbox(x, y):
-            return False
         
         idx = routing_db.coordinate_to_idx(nx, ny, nl)
 
@@ -614,10 +615,9 @@ def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: i
         if routing_db.pin_occ[idx] and idx not in [s_idx, g_idx]:
             return False
         
-        # if hard_corridor constraint is true, then we restrict nx,ny from leaving the global route corridor
-        if hard_corridor and corridor_tiles is not None:
-            tx,ty = routing_db.get_tile(nx, ny)
-            if (tx,ty) not in corridor_tiles:
+        if allowed_tiles is not None:
+            tx, ty = routing_db.get_tile(nx, ny, nl)
+            if (tx, ty) not in allowed_tiles:
                 return False
 
         return True
@@ -659,9 +659,9 @@ def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: i
 
             base = routing_db.step_cost(x, y, layer, nx, ny, nl)            # base cost for stepping into nx, ny, nl. This includes H/V steps, via steps, and congestion penalties
 
-            if corridor_tiles is not None and not hard_corridor:
+            if corridor_tiles is not None:
                 tx, ty = routing_db.get_tile(nx, ny, nl)                    # corridor tiles is none if global routing did not take place.
-                base += corridor_penalty_for_tile(tx, ty)                   # adding corridor penalty to the cost if global routing did occur and if hard_corridor is False
+                base += corridor_penalty_for_tile(tx, ty)                   # adding corridor penalty to the cost if global routing did occure
             
 
             tentative_g = cur_g + base                                       # same as in global routing, but without direction checking
@@ -735,17 +735,20 @@ def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tupl
                 if 0 <= nx < routing_db.num_tiles and 0 <= ny < routing_db.num_tiles:
                     neigh.add((nx, ny))
     
+    window = routed_order[-5 * k:] if len(routed_order) > 5 * k else routed_order[:]    # grabbing the most recent 5*k entries. If less than that many entries exist, then grab all of them
+    recency_rank = {net: i for i, net in enumerate(window)}                             # ranking nets that increases with recency
+
     scored = []
-    for net in routed_nets[-5*k:]:                  # look only at the most recent 5*k nets. It might be worth increasing this value, but this will come with added overhead costs
+    for net in window:                 
         tiles = set(routing_db.tiles_on_net(net))   # gets the tiles that the net passes through
         score = len(tiles & neigh)                  # compute the number of tiles that the net occupies in the neighborhood of the endpoints
-        scored.append((score,net))                  # score each net by the number of neighbor cells they occupy
+        scored.append((score, recency_rank[net], net))                  # score each net by the number of neighbor cells they occupy
 
-    # scored looks like [(2, 'NET_1'), (0, 'NET_2'), ... ]
-    scored.sort(key=lambda t: (t[0], routed_nets.index(t[1])))  # creates a tuple (score, routed_nets index). Tuples are sorted first by their first element (score), then by their second if score is equal. Thus, we are ranking nets by their score, then for ties rank by routing age. 
-    picks = [net for (s, net) in scored if s > 0]       # extracts all nets that overlap with the start/goal neighborhood
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)               # sorting scored with priority given to score; ties broken with recency rank
+
+    picks = [net for (s, _, net) in scored if s > 0]       # extracts all nets that overlap with the start/goal neighborhood
     if len(picks) < k:                          # if picks is fewer than k, then we fill the remaining slots with most recent nets
-        for net in reversed(routed_nets):       # reverses the list of routed nets so that more recent nets come first 
+        for net in reversed(routed_order):       # reverses the list of routed nets so that more recent nets come first 
             if net not in picks:                # add it to the list of picks if it's not already there
                 picks.append(net)
             if len(picks) == k:                 # as soon as we get k nets, we break. 
@@ -805,7 +808,7 @@ params = RouterParams(
     cong_alpha=8.0,
     cong_p=2.0,
 
-    do_global_for_types=("LONG"),
+    do_global_for_types=("LONG",),
     global_cong_weight=0.002, 
     global_turn_penalty=0.0,
 
@@ -824,6 +827,7 @@ routing_order: list[str] = create_routing_order(netlist)       # creates a routi
 work_q = deque(routing_order)                                  # create a double-ended queue for the routing order to allow us to re-route nets after they are ripped up 
 in_queue = set(routing_order)                                  # creates a set for quick lookups for which nets are currently in the queue
 routed_set = set()                                             # contains the nets currently committed (not ripped up)
+routed_order = []
 reroute_count = {}                                             # dict containing net-name -> times requeued due to ripup
 total_nets = len(routing_order)
 
@@ -875,13 +879,19 @@ while work_q and pops < max_total_pops:
         if netlist["nets"][net_name]["type"] in local_params.do_global_for_types:       # checks if the type of the net is one that we allow global routing for
             global_route = A_star_global(start, goal, routing_db, params=local_params, endpoints_are_tiles=False)
         else: 
-            global_route = None
+            global_route = None    
+
+        if global_route is None:
+            band_limit = None  # means no region restriction
+        else:
+            band_limit = min(attempt, len(local_params.corridor_band_cost) - 1)  # 0,1,2,... up to max_band
+
 
         # if we have already failed once and we allow corridor relaxing after retry, then we delete the global route corridor, which allows more freedom for the detailed route, but at the cost of added overhead
         if attempt > 0 and local_params.relax_corridor_on_retry:
             global_route = None
 
-        detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params)
+        detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params, band_limit=(band_limit if band_limit is not None else math.inf))
 
         # if A_star_detailed() fails to route, it does not throw an error. Instead, it returns None
         if detailed_route is not None:  # so, if we do successfully route, then detailed_route is not None. 
@@ -890,7 +900,7 @@ while work_q and pops < max_total_pops:
             break
         
         # if we reach this point, then we have failed to route. Now we ripup some nets and try again
-        rip_list = choose_ripup_nets(routing_db, list(routed_set), start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
+        rip_list = choose_ripup_nets(routing_db, routed_order, start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
         for rip_net in rip_list:
             # only rip up nets that are actually routed
             if rip_net not in routed_set:
@@ -898,6 +908,8 @@ while work_q and pops < max_total_pops:
 
             routing_db.rip_up(rip_net)
             routed_set.remove(rip_net)
+            routed_order.remove(rip_net)        # removing the rip_net from the routing order
+
 
             # now we need to re-queue ripped net so it gets routed again later
             cnt = reroute_count.get(rip_net,0)      # gets the current number of times that rip_net has been re-queued
@@ -931,6 +943,7 @@ while work_q and pops < max_total_pops:
 
     routing_db.commit_route(net_name, detailed_route)
     routed_set.add(net_name)
+    routed_order.append(net_name)
 
 end_time = time.perf_counter()
 
