@@ -60,6 +60,10 @@ class RouterParams:
     bump_cong_alpha_on_retry: float = 1.5              # multiply cong_alpha by this each retry. Determines how much congestion penalty increases each retry
     max_requeue_per_net: int = 20                      # number of times a net can be placed back into the queue after being ripped up. Prevents infinite ripup - reroute loops
 
+    # per-net routing time limit (seconds). If a single net takes longer than this amount across all
+    # reroute attempts, it will be marked as a trouble net and treated specially to avoid hanging.
+    max_time_per_net: float = 60.0
+
     hist_weight: float = 2.0         # multiplier on history term in congestion penalty
     hist_inc: float = 1.0            # how much to increment history when tile is over threshold
     hist_util_thresh: float = 0.10   # only build history in tiles above this utilization
@@ -964,6 +968,178 @@ def try_l_route_with_layer_fallback(start, goal, routing_db, num_layers):
     
     return None
 
+
+def run_routing(netlist, params, initial_order=None):
+    """Perform a single routing pass using the existing loop logic.
+
+    The implementation is essentially the same code that was previously in the
+    "BEGIN MAIN" section but packaged into a callable function so that we can
+    rerun with a different net ordering if desired.
+    """
+    start_time = time.perf_counter()
+
+    netlist = deepcopy(netlist)
+
+    # build order, prioritizing an explicit list if provided
+    if initial_order is None:
+        routing_order = create_routing_order(netlist)
+    else:
+        seen = set()
+        routing_order = []
+        for n in initial_order:
+            if n in netlist["nets"] and n not in seen:
+                routing_order.append(n)
+                seen.add(n)
+        for n in netlist["nets"]:
+            if n not in seen:
+                routing_order.append(n)
+    total_nets = len(routing_order)
+
+    work_q = deque(routing_order)   # routing order implemented as a deque so that we can efficiently pop from the left and append to the right as we do reroutes. 
+    in_queue = set(routing_order)   # set to keep track of which nets are currently in the queue for O(1) membership checks, since checking membership in a deque is O(n)
+    routed_set = set()
+    routed_order = []
+    reroute_count = {}
+
+    routing_db = RoutingDB(grid_size=netlist['grid_size'], params=params)
+
+    # mark pin locations in routing_db.pin_occ so that A* can recognize them and route through them, but not place wires on top of them.
+    for net_name, net in netlist["nets"].items():
+        for (x, y) in net["pins"]:
+            idx = routing_db.coordinate_to_idx(x, y, 0)
+            routing_db.pin_occ[idx] = 1
+
+    pops = 0
+    max_total_pops = 10 * len(routing_order)    # sets maximum amount of pops allowed to prevent infinite looping
+    permanent_fail = set()                      # nets marked as permanently failed due to too many reroutes or time limit exceeded
+    trouble_nets = set()                        # nets that have exceeded time limit for routing but have not yet hit max reroute attempts, so they are marked as "trouble" but not yet a permanent fail. This is useful to track separately since these nets are likely to be the main contributors to routing failure, and we may want to analyze them further.
+
+    # pulse functionality to print out intermediate stats every PULSE_S seconds
+    t0 = time.perf_counter()
+    last_pulse = t0
+    PULSE_S = 10.0
+
+    while work_q and pops < max_total_pops:
+        now = time.perf_counter()
+
+        # print pulse with intermediate stats
+        if now - last_pulse > PULSE_S:
+            print(f"[{now-t0}s] routed={len(routed_set)}/{total_nets} "
+                  f"queue={len(work_q)} pops={pops} current={work_q[0]}")
+            last_pulse = now
+
+        net_name = work_q.popleft()
+        in_queue.remove(net_name)
+        pops += 1
+
+        # skip nets that have been marked as permanent fails so that we dont waste time trying to route them again.
+        if net_name in permanent_fail:
+            continue
+
+        (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]  # unpacking pins
+        start = (x0, y0, 0)
+        goal = (x1, y1, 0)
+
+        # create a local copy of params for this net. **vars(params) turns the dataclass into a dictionary, which is then unpacked into the RouterParams parameters to create a new instance. This allows us to modify local_params without affecting the original params object that is shared across nets.
+        local_params = RouterParams(**vars(params))    
+        detailed_route = None
+
+        # attempt to create L routes on higher metal layers before attempting detailed A*. This is an optimization that can save time on simple routes at the cost of potentially unnecessary vias
+        quick = try_l_route_with_layer_fallback(start, goal, routing_db, local_params.num_layers)
+        if quick is not None:
+            detailed_route = quick
+
+        net_start_time = time.perf_counter()
+        for attempt in range(local_params.max_reroute_attempts):
+            # tracking how much time we have spent on this net across all attempts, and if it exceeds the max_time_per_net parameter, we mark it as a trouble net (and permanently fail it) and break out of the loop to avoid wasting more time on it.
+            if time.perf_counter() - net_start_time > local_params.max_time_per_net:
+                print(f"Net {net_name} exceeded time limit ({local_params.max_time_per_net}s); \
+                      marking as trouble and giving up on further attempts.")
+                trouble_nets.add(net_name)
+                permanent_fail.add(net_name)
+                break
+
+            if detailed_route is not None:      # if we found a route through L-routing, then skip A* attempts. 
+                break
+
+            # do global routing if the net is the correct type
+            if netlist["nets"][net_name]["type"] in local_params.do_global_for_types:
+                global_route = A_star_global(start, goal, routing_db, params=local_params, endpoints_are_tiles=False)
+            else:
+                global_route = None
+
+            if global_route is None:
+                band_limit = None
+            else:
+                # if global route is present, we use it to determine the band_limit for detailed A*. The band_limit determines how far outside the global route corridor the detailed A* is allowed to search. We set it to the current attempt number to allow the search to expand further outside the corridor on each subsequent attempt, up to a maximum defined by the length of local_params.corridor_band_cost.
+                band_limit = min(attempt, len(local_params.corridor_band_cost) - 1)
+
+            # if we have already attempted at least one detailed A* with the global route and if we allow relaxing the corridor on retries, then we set the global route to None to allow the detailed A* to search more freely without being guided by the global route
+            if attempt > 0 and local_params.relax_corridor_on_retry:
+                global_route = None
+
+            detailed_route = A_star_detailed(start, goal, routing_db, global_route,
+                                             params=local_params,
+                                             band_limit=(band_limit if band_limit is not None else math.inf))
+
+            if detailed_route is not None:
+                if attempt > 0:
+                    print(f"Successfully found path between {start} and {goal} after {attempt} attempts.")      # only print this message if we have found a path after previously failing
+                break
+
+            # select nets to be ripped up based on the neighborhood around the start and goal and recency of routing, and then rip them up and add them back to the queue if they have not exceeded the max_requeue_per_net limit
+            rip_list = choose_ripup_nets(routing_db, routed_order, start, goal, k=local_params.ripup_k)
+            for rip_net in rip_list:
+                if rip_net not in routed_set:   # sanity check to make sure the net we want to rip up is actually routed
+                    continue
+                routing_db.rip_up(rip_net)      # rip up the net in the routing database
+                routed_set.remove(rip_net)      # remove it from the set of routed nets
+                routed_order.remove(rip_net)    # remove it from the order of routed nets. This is important for the recency ranking in choose_ripup_nets to work correctly on subsequent attempts.
+                cnt = reroute_count.get(rip_net, 0) + 1     # increment the reroute count for this net since we are about to attempt to reroute it again
+                reroute_count[rip_net] = cnt                # update the reroute count in the dictionary
+
+                # if the net we just ripped up has not exceeded the max_requeue_per_net limit, and if it is not already in the queue to be routed again, and if it has not been marked as a permanent fail, then we add it back to the queue to be rerouted. Otherwise, if it has exceeded the max_requeue_per_net limit, we mark it as a permanent fail so that we dont waste time trying to route it again in the future.
+                if cnt <= local_params.max_requeue_per_net: 
+                    if rip_net not in in_queue and rip_net not in permanent_fail:
+                        work_q.append(rip_net)
+                        in_queue.add(rip_net)
+                else:
+                    print(f"{rip_net} has failed to route {local_params.max_requeue_per_net} times. "
+                          "Marking as a permanent fail.")
+                    permanent_fail.add(rip_net)
+
+            # update the history penalties based on the current congestion. This will affect the cost function for the next A* attempt, making it more likely to find a different path that is less congested.
+            routing_db.update_history_penalties() 
+            local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry    # bumping up the congestion alpha to make congestion penalties more severe on each retry, which should encourage the search to find less congested paths on subsequent attempts
+
+        # if we exit the attempt loop without finding a detailed route, then we check if the net should be requeued for another attempt or marked as a permanent fail. We only requeue it if it has not exceeded the max_requeue_per_net limit and if it is not already in the queue or marked as a permanent fail. Otherwise, we mark it as a permanent fail to avoid wasting time on it in the future
+        if detailed_route is None:
+            if net_name in trouble_nets:
+                continue
+            cnt = reroute_count.get(net_name, 0) + 1
+            reroute_count[net_name] = cnt
+            if cnt <= local_params.max_requeue_per_net:
+                if net_name not in in_queue:
+                    work_q.append(net_name)
+                    in_queue.add(net_name)
+            else:
+                permanent_fail.add(net_name)
+            continue
+
+        routing_db.commit_route(net_name, detailed_route)       # commit the successful route to the routing database 
+        routed_set.add(net_name)                                # add the net to the set of routed nets for O(1) membership checks
+        routed_order.append(net_name)                           # add the net to the order of routed nets, which is used for recency ranking in choose_ripup_nets       
+
+    end_time = time.perf_counter()
+    elapsed = end_time - start_time         # total time elapsed for this routing pass
+    print(f"Routing summary: {len(routed_set)}/{total_nets} nets routed "
+          f"({100.0*len(routed_set)/total_nets}%). Failed: {total_nets - len(routed_set)}. "
+          f"Permanent fails: {len(permanent_fail)}. Pops: {pops}.")
+    if trouble_nets:
+        print(f"Trouble nets (timed out): {trouble_nets}")
+
+    return routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, elapsed
+
 """
 
 ========================================================================================
@@ -971,11 +1147,7 @@ BEGIN MAIN
 ========================================================================================
 """
 
-start_time = time.perf_counter()
-
 netlist = deepcopy(data)
-
-# establishes list of tuning knobs used by router
 params = RouterParams(
     num_layers=8,
     tile_size=10,
@@ -996,150 +1168,36 @@ params = RouterParams(
     relax_corridor_on_retry=True,
     bump_cong_alpha_on_retry=1.5,
     max_requeue_per_net=20,
-    )
+)
 
-routing_order: list[str] = create_routing_order(netlist)       # creates a routing order in the form of a list of net names
-work_q = deque(routing_order)                                  # create a double-ended queue for the routing order to allow us to re-route nets after they are ripped up 
-in_queue = set(routing_order)                                  # creates a set for quick lookups for which nets are currently in the queue
-routed_set = set()                                             # contains the nets currently committed (not ripped up)
-routed_order = []
-reroute_count = {}                                             # dict containing net-name -> times requeued due to ripup
-total_nets = len(routing_order)
+# attempt routing once with the default order, and then if we see trouble nets and we finished reasonably quickly, we try rerouting just the trouble nets with a different order to see if we can get more of them routed successfully
+routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, elapsed = run_routing(netlist, params)
 
-# instantiate the routing database
-routing_db = RoutingDB(
-                grid_size=netlist['grid_size'], 
-                params = params)
-
-# placing all pins in the netlist before routing takes place
-for net_name, net in netlist["nets"].items():
-    for (x, y) in net["pins"]:
-        idx = routing_db.coordinate_to_idx(x, y, 0)
-        routing_db.pin_occ[idx] = 1
-
-pops = 0
-max_total_pops= 10 * len(routing_order)     # maximum number of queue pops that are allowed. Helps to prevent infinite ripup -> reroute loops
-permanent_fail = set()
-
-# adding pulse functionality for occasional print statements 
-t0 = time.perf_counter()
-last_pulse = t0
-PULSE_S = 10.0
-while work_q and pops < max_total_pops:
-
-    now = time.perf_counter()
-    if now - last_pulse > PULSE_S:
-        print(f"[{now-t0}s] routed={len(routed_set)}/{total_nets} "
-            f"queue={len(work_q)} pops={pops} current={net_name}")
-        last_pulse = now
-
-    net_name = work_q.popleft()             # grabbing the leftmost net from the queue
-    in_queue.remove(net_name)               # removing that net from the lookup set
-    pops += 1
-
-    # if the net belongs to the set of permanently failed nets, skip it. 
-    if net_name in permanent_fail:
-        continue
-
-    (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]  # extracts pins
-    start = (x0, y0, 0)     # places start on m2
-    goal  = (x1, y1, 0)     # places goal on m2
-
-    # create a RouterParams instance that we can modify as we go (increasing params.cong_alpha after each failure, for example)
-    local_params = RouterParams(**vars(params))     #vars(params) returns the variable:value dictionary and ** unpacks the dict into kwargs. Bascially we are just passing the parameters of params as arguments to the local_params instance
-    detailed_route = None
-
-    
-    # before we try A* for global and detailed routing, we first try L-routing on progressively lower metal layers
-    quick = try_l_route_with_layer_fallback(start, goal, routing_db, local_params.num_layers)
-    if quick is not None:
-        detailed_route = quick
-    
-    # now we need to try routing net_name. If it fails, we try again up to max_reroute_attempts times
-    for attempt in range(local_params.max_reroute_attempts):
-        if detailed_route is not None:
-            break
-
-        if netlist["nets"][net_name]["type"] in local_params.do_global_for_types:       # checks if the type of the net is one that we allow global routing for
-            global_route = A_star_global(start, goal, routing_db, params=local_params, endpoints_are_tiles=False)
-        else: 
-            global_route = None    
-
-        if global_route is None:
-            band_limit = None  # means no region restriction
-        else:
-            band_limit = min(attempt, len(local_params.corridor_band_cost) - 1)  # 0,1,2,... up to max_band
-
-
-        # if we have already failed once and we allow corridor relaxing after retry, then we delete the global route corridor, which allows more freedom for the detailed route, but at the cost of added overhead
-        if attempt > 0 and local_params.relax_corridor_on_retry:
-            global_route = None
-
-        detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params, band_limit=(band_limit if band_limit is not None else math.inf))
-
-        # if A_star_detailed() fails to route, it does not throw an error. Instead, it returns None
-        if detailed_route is not None:  # so, if we do successfully route, then detailed_route is not None. 
-            if attempt > 0:
-                print(f"Successfully found path between {start} and {goal} after {attempt} attempts.")
-            break
-        
-        # if we reach this point, then we have failed to route. Now we ripup some nets and try again
-        rip_list = choose_ripup_nets(routing_db, routed_order, start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
-        for rip_net in rip_list:
-            # only rip up nets that are actually routed
-            if rip_net not in routed_set:
-                continue
-
-            routing_db.rip_up(rip_net)
-            routed_set.remove(rip_net)
-            routed_order.remove(rip_net)        # removing the rip_net from the routing order
-
-
-            # now we need to re-queue ripped net so it gets routed again later
-            cnt = reroute_count.get(rip_net,0)      # gets the current number of times that rip_net has been re-queued
-            cnt += 1                                # increments the count
-            reroute_count[rip_net] = cnt            # writes incremented count back to dict
-            if reroute_count[rip_net] <= local_params.max_requeue_per_net:
-                # if rip_net is not already in the queue or marked as permanently failed, put it back in the queue
-                if rip_net not in in_queue and rip_net not in permanent_fail:
-                    work_q.append(rip_net)
-                    in_queue.add(rip_net)                        
-                else:
-                    # it has been ripped up and readded too many times. mark as permanent fail
-                    print(f"{rip_net} has failed to route {local_params.max_requeue_per_net} times. Marking as a permanent fail.")
-                    permanent_fail.add(rip_net)
-
-        # after ripup, we update history penalties and increase the congestion pressure so that we avoid recreating the same blockage
-        routing_db.update_history_penalties()
-        local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry
-
-    if detailed_route is None:
-        # detailed route failed for this net. We will add it back to queue for retrying, as long as it hasnt reached the max number of requeues. 
-        cnt = reroute_count.get(net_name,0)      # gets the current number of times that net_name has been re-queued
-        cnt += 1                                 # increments the count
-        reroute_count[net_name] = cnt            # writes incremented count back to dict
-        if reroute_count[net_name] <= local_params.max_requeue_per_net:
-            if net_name not in in_queue:
-                work_q.append(net_name)
-                in_queue.add(net_name)
-        else:
-            permanent_fail.add(net_name)
-        continue
-
-    routing_db.commit_route(net_name, detailed_route)
-    routed_set.add(net_name)
-    routed_order.append(net_name)
-
-end_time = time.perf_counter()
+# if we finished reasonably quickly and saw trouble nets, try rerouting them first
+# we check if the total elapsed time is less than twice the maximum time we would expect to spend on the trouble nets if we routed them sequentially with no interference. If we have already spent more time than that, then it is unlikely that rerouting just the trouble nets will finish in a reasonable time frame, so we skip the second pass to avoid wasting more time.
+if trouble_nets and elapsed < len(trouble_nets) * params.max_time_per_net * 2:  
+    print("\nRe-running routing with trouble nets prioritized...")
+    second_db, second_routed_set, second_order, second_fail, second_trouble, second_pops, second_elapsed = run_routing(netlist, params, initial_order=list(trouble_nets))
+    if len(second_routed_set) > len(routed_set):
+        routing_db = second_db
+        routed_set = second_routed_set
+        permanent_fail = second_fail
+        print("Second pass achieved more successful routes, adopting its result.")
+    else:
+        print("Second pass did not improve number of routed nets; keeping original solution.")
+    elapsed += second_elapsed  # accumulate total time
 
 success_routes = len(routed_set)
+total_nets = len(netlist["nets"])
 failed_routes = total_nets - success_routes
 
 print(f"Routing summary: {success_routes}/{total_nets} nets routed "
       f"({100.0*success_routes/total_nets}%). Failed: {failed_routes}. "
       f"Permanent fails: {len(permanent_fail)}. Pops: {pops}.")
+if trouble_nets:
+    print(f"Trouble nets (timed out) : {trouble_nets}")
 
 completed_routes = add_m1_vias_to_all_routes(routing_db, netlist)
 print(f"Total cost for this netlist is {total_routing_cost_from_routes(completed_routes)}")
 
-print(f"Time elapsed: {end_time - start_time} seconds.")
+print(f"Time elapsed: {elapsed} seconds.")
