@@ -6,8 +6,8 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-#from Rtest.Rtest_100_500 import data
-from Reval.Reval_1000_30000 import data
+from Rtest.Rtest_500_6000 import data
+#from Reval.Reval_1000_30000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -943,6 +943,27 @@ def try_l_shape(start, goal, routing_db, layers=(0,1)):
 
     return None
 
+def try_l_route_with_layer_fallback(start, goal, routing_db, num_layers):
+    """
+    Attempts L-routing starting with the highest available metal layers and progressively decrements layers.
+    Returns a path for the first L route that succeeeds, or None if all attempts fail.
+    """
+    # generate consecutive layer pairs starting from highest: (6,7), (5,6), (4,5), (3,4), (2,3), (1,2)
+    # we skip (0,1) since layer 0 is M2 which is reserved for pins
+    layer_pairs = []
+    for high_layer in range(num_layers - 1, 1, -1):  # (7,6), (6,5), ..., (2,1)
+        low_layer = high_layer - 1
+        if 0 <= low_layer < num_layers:
+            layer_pairs.append((low_layer, high_layer))
+    
+    # try L route on each layer pair in order (highest to lowest)
+    for layer_pair in layer_pairs:
+        result = try_l_shape(start, goal, routing_db, layers=layer_pair)
+        if result is not None:
+            return result
+    
+    return None
+
 """
 
 ========================================================================================
@@ -1028,8 +1049,17 @@ while work_q and pops < max_total_pops:
     local_params = RouterParams(**vars(params))     #vars(params) returns the variable:value dictionary and ** unpacks the dict into kwargs. Bascially we are just passing the parameters of params as arguments to the local_params instance
     detailed_route = None
 
+    
+    # before we try A* for global and detailed routing, we first try L-routing on progressively lower metal layers
+    quick = try_l_route_with_layer_fallback(start, goal, routing_db, local_params.num_layers)
+    if quick is not None:
+        detailed_route = quick
+    
     # now we need to try routing net_name. If it fails, we try again up to max_reroute_attempts times
     for attempt in range(local_params.max_reroute_attempts):
+        if detailed_route is not None:
+            break
+
         if netlist["nets"][net_name]["type"] in local_params.do_global_for_types:       # checks if the type of the net is one that we allow global routing for
             global_route = A_star_global(start, goal, routing_db, params=local_params, endpoints_are_tiles=False)
         else: 
@@ -1044,12 +1074,6 @@ while work_q and pops < max_total_pops:
         # if we have already failed once and we allow corridor relaxing after retry, then we delete the global route corridor, which allows more freedom for the detailed route, but at the cost of added overhead
         if attempt > 0 and local_params.relax_corridor_on_retry:
             global_route = None
-        
-        # before we try A* for detailed routing, we first see if we can create an L-shaped route between the two pins
-        quick = try_l_shape(start, goal, routing_db, layers=(2,3))
-        if quick is not None:
-            detailed_route = quick
-            break
 
         detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params, band_limit=(band_limit if band_limit is not None else math.inf))
 
