@@ -497,7 +497,7 @@ def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
 
     return bands
 
-def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams) -> list[tuple[int,int,int]]:
+def A_star_detailed(start, goal, routing_db, global_route, params, box_margin: int, hard_corridor: bool) -> list[tuple[int,int,int]]:
     """
     Uses A* search on the detailed routing grid to find a detailed route between start and goal.
     Even layers (0, 2, 4, 6) allow only vertical moves;
@@ -526,11 +526,22 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
         print(f"Detailed A*: start/goal out of bounds: start={start}, goal={goal}")
         return None
     
+    s_idx = routing_db.coordinate_to_idx(*start)        # DB index for start
+    g_idx = routing_db.coordinate_to_idx(*goal)         # DB index for goal
+
     # return empty route if start or goal are already occupied by wires (not pins)
-    if routing_db.occ[routing_db.coordinate_to_idx(*start)] or routing_db.occ[routing_db.coordinate_to_idx(*goal)]:
+    if routing_db.occ[s_idx] or routing_db.occ[g_idx]:
         print(f"Detailed A*: start/goal occupied by previously committed wire: start={start}, goal={goal} ")
         return None
     
+    sx, sy, sl = start
+    gx, gy, gl = goal
+
+    # we want to create a bounding box in which we will restrict the detailed route. Box margin increases after each failure, which allows bounding box to grow.
+    xmin = max(0, min(sx,gx) - box_margin)                              # using max (and min on next line) to clip bounding box to the boundaries of the placement grid
+    xmax = min(routing_db.grid_size - 1, max(sx, gx) + box_margin)
+    ymin = max(0, min(sy, gy) - box_margin)
+    ymax = min(routing_db.grid_size - 1, max(sy, gy) + box_margin)
 
     # implementing corridor penalty machinery if global routes is present
     corridor_tiles = set(global_route) if global_route is not None else None
@@ -548,8 +559,8 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
         cap = (routing_db.tile_size * routing_db.tile_size) * routing_db.num_layers     # defines the capacity of a tile as its area times depth (in terms of detailed cells)
         util = routing_db.tile_cong[tx][ty] / cap                                       # computes utilization by dividing the congestion (number of committed cells in tile) by its capacity
 
-        UTIL_THRESH = params.corridor_util_thresh          # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the UTIL_THRESH threshold.
-        if util < UTIL_THRESH:
+        # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the threshold.
+        if util < params.corridor_util_thresh:
             return 0.0
 
         t = (tx, ty)
@@ -559,30 +570,40 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
         
         return band_cost[max_band] + params.corridor_far_penalty    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
 
-    def h(current, goal):
-        """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
-        x, y, layer = current
-        gx, gy, glayer = goal
+    def in_bbox(x, y):
+        """ Checks if coordinate is in the bounding box"""
+        return (xmin <= x <= xmax) and (ymin <= y <= ymax)
 
-        manhattan_dist = abs(y-gy) + abs(x-gx)        # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
-        via_to_goal_lb  = abs(layer - glayer)         # lower bound for number of vias needed is the number of layers separating the two coordinates. 
+    def h(node_idx):
+        """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
+        x, y, layer = routing_db.idx_to_coordinate(node_idx)
+
+        manhattan_dist = abs(y-gy) + abs(x-gx)    # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
+        via_to_goal_lb  = abs(layer - gl)         # lower bound for number of vias needed is the number of layers separating the two coordinates. 
 
         # Additional vias will be required if dx and dy are nonzero AND glayer == layer. This is because we would need to switch layers to move in one of the directions to close the gap. However, I am unsure if we can add these extra vias to the lower bound without violating consistency. For that reason, I am going to only add lower bound for vias needed to traverse the layers between current and goal. 
     
         return manhattan_dist + 2.0*via_to_goal_lb
     
-    def reconstruct_path(came_from, current):
-        path = [current]
-        while came_from[current] is not None:
-            current = came_from[current]
-            path.append(current)
-        path.reverse()
-        return path
+    def reconstruct_path(came_from, end_idx):
+        out_idx = [end_idx]     # initializing out_idx list
+        cur = end_idx
+        while True:
+            prev = came_from.get(cur, -1)       # if cur doesnt exist in came_from, return -1
+            if prev == -1:                      # and then break
+                break
+            out_idx.append(prev)                # adding the cell that cur came from to the list
+            cur = prev                          # updating cur
+        out_idx.reverse()                       # reversing the list to go from start to end instead of end to start
+        return [routing_db.idx_to_coordinate(i) for i in out_idx]       # turning DB indices back into coordinates
     
     def cell_allowed(nx, ny, nl):
         """Determines if a cell is allowed by peforming boundary checks, checking route occupancy array, and checking pin ocupancy array """
         if not routing_db.in_bounds(nx, ny, nl):
             return False
+        if not in_bbox(x, y):
+            return False
+        
         idx = routing_db.coordinate_to_idx(nx, ny, nl)
 
         # check occupancy array for non-pins
@@ -590,61 +611,66 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
             return False
 
         # checking occupancy array for pins. If it is in the pin array, check if it is one of the current net's pins
-        if routing_db.pin_occ[idx] and (nx, ny, nl) not in {start, goal}:
+        if routing_db.pin_occ[idx] and idx not in [s_idx, g_idx]:
             return False
+        
+        # if hard_corridor constraint is true, then we restrict nx,ny from leaving the global route corridor
+        if hard_corridor and corridor_tiles is not None:
+            tx,ty = routing_db.get_tile(nx, ny)
+            if (tx,ty) not in corridor_tiles:
+                return False
 
         return True
 
-    def find_neighbors(node):
-        x, y, layer = node
-        if layer % 2 == 0:
-            candidates = [(x, y+1, layer), (x, y-1, layer), (x, y, layer+1), (x, y, layer-1)]     # only vertical moves or vias on even layers
-        else: 
-            candidates = [(x+1, y, layer), (x-1, y, layer), (x, y, layer+1), (x, y, layer-1)]     # only horizontal moves or vias on odd layers
+    # Below is the main A_star loop. It is similar to the global routing A*, but this version works primarily with DB indices rather than coordinate values. 
+    g = {s_idx: 0.0}
+    came_from = {s_idx: -1}
 
-        return [cell for cell in candidates if cell_allowed(*cell)]             # candidates must be in bounds and unoccupied to be a valid neighbor. 
-    
-    def step_cost(current, neighbor):
-        x, y, layer = current
-        nx, ny, nlayer = neighbor
-        base_cost = routing_db.step_cost(x, y, layer, nx, ny, nlayer)       # computes the base cost of the move, which consists of 1.0 + 2*(number of layers traversed) + congestion penalty (for entering a congested region)
-
-        if global_route is None:
-            return base_cost                # no need to compute penalties associated with leaving the global route if the global route does not exist. 
-
-        tx = nx // routing_db.tile_size
-        ty = ny // routing_db.tile_size
-
-        return base_cost + corridor_penalty_for_tile(tx, ty)
-
-    # Below is the main A_star loop. It is identical to the A_star loop in the global routing case, except this time direction checking does not make up part of the move cost. Everything else is the same, so see comments in A_star_global for additional details. 
-    g = {start: 0.0}
-
-    open_set = []
-    heapq.heappush(open_set, (h(start, goal), start))
+    h_start = h(s_idx)
+    f_start = h_start
+    open_set = [(f_start, h_start, s_idx)]     # heap is slightly modified; h is used to break ties in f
 
     closed = set()
-    came_from = {start: None}
-
+    
     while open_set:
-        current = heapq.heappop(open_set)[1]
+        cur_idx = heapq.heappop(open_set)[2]    # extract only s_idx; indices 0 and 1 are used for heap ordering
 
-        if current in closed:
+        if cur_idx in closed:
             continue
 
-        if current == goal:
-            return reconstruct_path(came_from, current)
+        if cur_idx == g_idx:
+            return reconstruct_path(came_from, cur_idx)
 
-        closed.add(current)
+        closed.add(cur_idx)
+        x, y, layer = routing_db.idx_to_coordinate(cur_idx)     # extracting the coordinate associated with cur_idx
 
-        for neighbor in find_neighbors(current):
-            tentative_g = g[current] + step_cost(current, neighbor)         # same as in global routing, but without direction checking
+        # neighbor candidates are assigned here. Even layer neighbors include only via steps and vertical steps; odd layer neighbors include only via steps and horizontal steps
+        if layer % 2 == 0:
+            candidates = [(x, y + 1, layer), (x, y - 1, layer), (x, y, layer + 1), (x, y, layer - 1)]
+        else:
+            candidates = [(x + 1, y, layer), (x - 1, y, layer), (x, y, layer + 1), (x, y, layer - 1)]
 
-            if tentative_g < g.get(neighbor, math.inf):
-                came_from[neighbor] = current
-                g[neighbor] = tentative_g
-                f_neighbor = tentative_g + h(neighbor, goal)
-                heapq.heappush(open_set, (f_neighbor, neighbor))
+        cur_g = g[cur_idx]
+        for nx, ny, nl in candidates:
+            if not cell_allowed(nx, ny, nl):
+                continue
+
+            n_idx = routing_db.coordinate_to_idx(nx, ny, nl)
+
+            base = routing_db.step_cost(x, y, layer, nx, ny, nl)            # base cost for stepping into nx, ny, nl. This includes H/V steps, via steps, and congestion penalties
+
+            if corridor_tiles is not None and not hard_corridor:
+                tx, ty = routing_db.get_tile(nx, ny, nl)                    # corridor tiles is none if global routing did not take place.
+                base += corridor_penalty_for_tile(tx, ty)                   # adding corridor penalty to the cost if global routing did occur and if hard_corridor is False
+            
+
+            tentative_g = cur_g + base                                       # same as in global routing, but without direction checking
+            if tentative_g < g.get(n_idx, math.inf):
+                g[n_idx] = tentative_g
+                came_from[n_idx] = cur_idx
+                hn = h(n_idx)
+                fn = tentative_g + hn
+                heapq.heappush(open_set, (fn, hn, n_idx))
 
     print(f"Detailed A*: no path found between {start} and {goal}.")
     return None
@@ -779,6 +805,7 @@ params = RouterParams(
     cong_alpha=8.0,
     cong_p=2.0,
 
+    do_global_for_types=("LONG"),
     global_cong_weight=0.002, 
     global_turn_penalty=0.0,
 
