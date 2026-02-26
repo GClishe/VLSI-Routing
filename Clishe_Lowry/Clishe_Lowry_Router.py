@@ -6,7 +6,7 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-from Rtest.Rtest_500_5000 import data
+from Rtest.Rtest_1500_50000 import data
 #from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
@@ -798,6 +798,7 @@ work_q = deque(routing_order)                                  # create a double
 in_queue = set(routing_order)                                  # creates a set for quick lookups for which nets are currently in the queue
 routed_set = set()                                             # contains the nets currently committed (not ripped up)
 reroute_count = {}                                             # dict containing net-name -> times requeued due to ripup
+total_nets = len(routing_order)
 
 # instantiate the routing database
 routing_db = RoutingDB(
@@ -814,7 +815,18 @@ pops = 0
 max_total_pops= 10 * len(routing_order)     # maximum number of queue pops that are allowed. Helps to prevent infinite ripup -> reroute loops
 permanent_fail = set()
 
+# adding pulse functionality for occasional print statements 
+t0 = time.perf_counter()
+last_pulse = t0
+PULSE_S = 10.0
 while work_q and pops < max_total_pops:
+
+    now = time.perf_counter()
+    if now - last_heartbeat > PULSE_S:
+        print(f"[{now-t0}s] routed={len(routed_set)}/{total_nets} "
+            f"queue={len(work_q)} pops={pops} current={net_name}")
+        last_heartbeat = now
+
     net_name = work_q.popleft()             # grabbing the leftmost net from the queue
     in_queue.remove(net_name)               # removing that net from the lookup set
     pops += 1
@@ -895,7 +907,6 @@ while work_q and pops < max_total_pops:
 
 end_time = time.perf_counter()
 
-total_nets = len(routing_order)
 success_routes = len(routed_set)
 failed_routes = total_nets - success_routes
 
