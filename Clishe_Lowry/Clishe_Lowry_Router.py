@@ -6,20 +6,20 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-#from Rtest.Rtest_500_6000 import data
+from Rtest.Rtest_100_100 import data
 #from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
-data = {   'grid_size': 100,
-    'nets': {   'NET_0': {   'length': 3,
-                             'pins': [(99, 56), (99, 59)],
-                             'type': 'LOCAL'},
-                'NET_1': {   'length': 48,
-                             'pins': [(5, 72), (44, 63)],
-                             'type': 'MEDIUM'},
-                'NET_2': {   'length': 52,
-                             'pins': [(43, 74), (5, 60)],
-                             'type': 'LONG'}}}
+#data = {   'grid_size': 100,
+#    'nets': {   'NET_0': {   'length': 3,
+#                             'pins': [(99, 56), (99, 59)],
+#                             'type': 'LOCAL'},
+#                'NET_1': {   'length': 48,
+#                             'pins': [(5, 72), (44, 63)],
+#                             'type': 'MEDIUM'},
+#                'NET_2': {   'length': 52,
+#                             'pins': [(43, 74), (5, 60)],
+#                             'type': 'LONG'}}}
 
 
 @dataclass      # dataclass decorator useful for classes like these whose entire purpose is holding data. It simply automatically generates boilerplate methods like __init__ so that we do not have to. 
@@ -775,7 +775,7 @@ params = RouterParams(
     corridor_far_penalty=3.0,
     corridor_util_thresh=0.02,
 
-    max_reroute_attempts=3,
+    max_reroute_attempts=10,
     ripup_k=10,
     relax_corridor_on_retry=True,
     bump_cong_alpha_on_retry=1.5,
@@ -819,6 +819,8 @@ for net_name in routing_order:
 
         # if A_star_detailed() fails to route, it does not throw an error. Instead, it returns None
         if detailed_route is not None:  # so, if we do successfully route, then detailed_route is not None. 
+            if attempt > 0:
+                print(f"Successfully found path between {start} and {goal} after {attempt} attempts.")
             break
         
         # if we reach this point, then we have failed to route. Now we ripup some nets and try again
