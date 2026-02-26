@@ -648,43 +648,23 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
     print(f"Detailed A*: no path found between {start} and {goal}.")
     return None
 
-def total_routing_cost_from_db(routing_db, return_per_net: bool = False):
-    """
-    Compute total routing cost across all nets in db.net_routes.
-
-    Wire unit cost is 1.0 per step and via unit cost is 2.0 per via.
-    Parameters:
-    return_per_net : bool
-        If True, returns (total_cost, per_net_dict).
-    strict : bool
-        If True, enforces that each step is either a via
-
-    Returns:
-    total_cost : float
-    per_net : dict[str, float]  (only if return_per_net=True)
-    """
+def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
 
     WIRE_COST = 1.0
     VIA_COST  = 2.0
 
     total = 0.0
-    per_net = {}        # initializing per-net costs
 
-    for net_name, idx_path in routing_db.net_routes.items():            # grabs the net name and the path for that net
-        # if net_name is not routed, then idx_path will be None, in which case we set the cost to 0 and skip. 
-        if not idx_path:
-            per_net[net_name] = 0.0
+    for net_name, path in routes.items():            # grabs the net name and the path for that net
+        # skip unrouted nets 
+        if not path or len(path) < 2:
             continue
 
-        cost = 0.0
-        prev = routing_db.idx_to_coordinate(idx_path[0])                # to find the cost, we need to keep track of previous coordinate and current coordinate. previous coordinate initialized to the first one
+        total = 0.0
+        prev = path[0]                # to find the cost, we need to keep track of previous coordinate and current coordinate. previous coordinate initialized to the first one
 
-        for idx in idx_path[1:]:                                # starting the loop at the second coordinate, since previous coordinate is initialized to the first
-            cur = routing_db.idx_to_coordinate(idx)                 
-
-            # unpacking
+        for (x1,y1,l1) in path[1:]:   # starting the loop at the second coordinate, since previous coordinate is initialized to the first             
             x0, y0, l0 = prev
-            x1, y1, l1 = cur
 
             # finding the change in x, y, and layer
             dx = abs(x1 - x0)           
@@ -699,19 +679,17 @@ def total_routing_cost_from_db(routing_db, return_per_net: bool = False):
             is_via_step  = (wire_len == 0) and (via_len == 1)
             if not (is_wire_step or is_via_step):
                 raise ValueError(
-                    f"{net_name}: invalid step {prev} -> {cur} "
+                    f"{net_name}: invalid step {(x0,y0,l0)} -> {(x1,y1,l1)} "
                     f"(dx={dx}, dy={dy}, dl={dl})"
                 )
 
             cost += WIRE_COST * wire_len
             cost += VIA_COST  * via_len
-            prev = cur
+            prev = (x1, y1, l1)             # updating prev
 
-        # adding the cost of that net to per_net dict if we want the cost associated with only that net.
-        per_net[net_name] = cost
         total += cost
 
-    return (total, per_net) if return_per_net else total            # returns either (total cost, per_net cost dict) or simply total cost if return_per_net is False
+    return total
 
 def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tuple[int, int, int], goal: tuple[int,int,int], k: int) -> list[str]:
     """"
@@ -829,6 +807,7 @@ for net_name, net in netlist["nets"].items():
         routing_db.pin_occ[idx] = 1
 
 routed_nets = []
+failed_routes = 0
 for net_name in routing_order:
     (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]  # extracts pins
     start = (x0, y0, 0)     # places start on m2
@@ -868,9 +847,11 @@ for net_name in routing_order:
 
     if detailed_route is None:
         print(f"FAILED to route {net_name} after {local_params.max_reroute_attempts} attempts.")
+        failed_routes += 1
         continue    # for the moment, when a net fails to route, i want to at least finish so that by the end I can figure out a percentage of nets that actually did get routed, which might help with tuning later on
 
     routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database
     routed_nets.append(net_name)
 
+completed_routes = add_m1_vias_to_all_routes(routing_db, netlist)
 print(f"Total cost for this netlist is {total_routing_cost_from_db(routing_db)}")
