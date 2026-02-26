@@ -714,6 +714,10 @@ def total_routing_cost_from_db(routing_db, return_per_net: bool = False):
     return (total, per_net) if return_per_net else total            # returns either (total cost, per_net cost dict) or simply total cost if return_per_net is False
 
 def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tuple[int, int, int], goal: tuple[int,int,int], k: int) -> list[str]:
+    """"
+    Chooses nets for ripup, prioritizing nets with a large presence in the neighborhoods around start and goal. If few such nets
+    exist, then we ripup the most recently routed nets. 
+    """
     (sx, sy, sl) = start
     (gx, gy, gl) = goal
     st = routing_db.get_tile(sx, sy, sl)
@@ -756,13 +760,33 @@ BEGIN MAIN
 
 netlist = deepcopy(data)
 
+# establishes list of tuning knobs used by router
+params = RouterParams(
+    num_layers=8,
+    tile_size=10,
+
+    cong_alpha=8.0,
+    cong_p=2.0,
+
+    global_cong_weight=0.002, 
+    global_turn_penalty=0.0,
+
+    corridor_band_cost=[0.0, 1.0, 3.0, 6.0],
+    corridor_far_penalty=3.0,
+    corridor_util_thresh=0.02,
+
+    max_reroute_attempts=3,
+    ripup_k=10,
+    relax_corridor_on_retry=True,
+    bump_cong_alpha_on_retry=1.5,
+    )
+
 routing_order: list[str] = create_routing_order(netlist)       # creates a routing order in the form of a list of net names
 
 # instantiate the routing database
 routing_db = RoutingDB(
                 grid_size=netlist['grid_size'], 
-                num_layers=8,
-                tile_size=10)
+                params = params)
 
 # placing all pins in the netlist before routing takes place
 for net_name, net in netlist["nets"].items():
@@ -770,34 +794,47 @@ for net_name, net in netlist["nets"].items():
         idx = routing_db.coordinate_to_idx(x, y, 0)
         routing_db.pin_occ[idx] = 1
 
+routed_nets = []
 for net_name in routing_order:
-    start_coord = netlist['nets'][net_name]['pins'][0]  # start_coord is the first pin in the 'pins' list
-    goal_coord  = netlist['nets'][net_name]['pins'][1]  # goal_coord is the second pin in the 'pins' list
+    (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]  # extracts pins
+    start = (x0, y0, 0)     # places start on m2
+    goal  = (x1, y1, 0)     # places goal on m2
 
-    start = (start_coord[0], start_coord[1], 0)         # placing start_coord on m2
-    goal  = (goal_coord[0],  goal_coord[1],  0)         # placing goal_coord on m2
+    # create a RouterParams instance that we can modify as we go (increasing params.cong_alpha after each failure, for example)
+    local_params = RouterParams(**vars(params))     #vars(params) returns the variable:value dictionary and ** unpacks the dict into kwargs. Bascially we are just passing the parameters of params as arguments to the local_params instance
+    detailed_route = None
 
-    # if the net is long, we start with global routing
-    if netlist['nets'][net_name]['type'] == 'LONG': 
-        global_route = A_star_global(
-                            start               = start,
-                            goal                = goal,
-                            routing_db          = routing_db,
-                            endpoints_are_tiles = False,
-                            congestion_weight   = 1,
-                            turn_penalty        = 0
-                            )
-    else:
-        global_route = None     # detailed routing A_star takes global_route as a parameter, so if global routing does not occur, then we set the route to None
+    # now we need to try routing net_name. If it fails, we try again up to max_reroute_attempts times
+    for attempt in range(local_params.max_reroute_attempts):
+        if netlist["nets"][net_name]["type"] in local_params.do_global_for_types:       # checks if the type of the net is one that we allow global routing for
+            global_route = A_star_global(start, goal, routing_db, params=local_params, endpoints_are_tiles=False)
+        else: 
+            global_route = None
 
-    detailed_route = A_star_detailed(
-                        start         = start,
-                        goal          = goal,
-                        routing_db    = routing_db,
-                        global_route  = global_route,
-                        num_layers    = routing_db.num_layers        
-                        )
-    
-    routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database, which automatically updates congestion
+        # if we have already failed once and we allow corridor relaxing after retry, then we delete the global route corridor, which allows more freedom for the detailed route, but at the cost of added overhead
+        if attempt > 0 and local_params.relax_corridor_on_retry:
+            global_route = None
+
+        detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params)
+
+        # if A_star_detailed() fails to route, it does not throw an error. Instead, it returns None
+        if detailed_route is not None:  # so, if we do successfully route, then detailed_route is not None. 
+            break
+        
+        # if we reach this point, then we have failed to route. Now we ripup some nets and try again
+        rip_list = choose_ripup_nets(routing_db, routed_nets, start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
+        for rip_net in rip_list:
+            routing_db.rip_up(rip_net)
+            routed_nets.remove(rip_net)
+        
+        # after ripup, we increase the congestion pressure so that we avoid recreating the same blockage
+        local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry
+
+    if detailed_route is None:
+        print(f"FAILED to route {net_name} after {local_params.max_reroute_attempts} attempts.")
+        continue    # for the moment, when a net fails to route, i want to at least finish so that by the end I can figure out a percentage of nets that actually did get routed, which might help with tuning later on
+
+    routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database
+    routed_nets.append(net_name)
 
 print(f"Total cost for this netlist is {total_routing_cost_from_db(routing_db)}")
