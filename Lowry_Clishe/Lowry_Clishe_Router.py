@@ -8,16 +8,16 @@ DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure origina
 MASTER_SEED = 123456789                 #Set seed to make RND reproducable.
 NUM_LAYERS = 9                          #Set the number of layers available
 maxPatternSize = -1                     #Set the maximum length pattern routing should be used for. Set to 0 to disable pattern routing step, and -1 for auto
-ADDITIONAL_PATTERN_LAYERS = False        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
-SUBOPTIMAL_PATTERNS = False              #Allow patterns to extend past the first layer they are allowed to be on, as well as enabling detouring patterns like U and Z. If disabled, ADDITIONAL_PATTERN_LAYERS won't do anything
-GENERATE_GRAPHS = True                  #Enables generation of 3D graphs to show final route
+ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
+SUBOPTIMAL_PATTERNS = True              #Allow patterns to extend past the first layer they are allowed to be on, as well as enabling detouring patterns like U and Z. If disabled, ADDITIONAL_PATTERN_LAYERS won't do anything
+GENERATE_GRAPHS = False                  #Enables generation of 3D graphs to show final route
 SHOW_GRAPH = False                      #Enables an interactive version of the graph to appear when finished
 
 #Set import / export folder names based on data set
-if DATA_NAME[:2] == 'Re':                #If the name of the data set starts with Re
-    FOLDER_NAME = 'Reval_netlists-2'     #Assume it's Reval and set it to that folder
+if DATA_NAME[:2] == 'Re':               #If the name of the data set starts with Re
+    FOLDER_NAME = 'Reval_netlists-2'    #Assume it's Reval and set it to that folder
 else:                                   #Otherwise assume Rtest. Use else here to accomadate the one called netlist_100_100
-    FOLDER_NAME = 'Rtest_netlists'       #Set folder to Rtest
+    FOLDER_NAME = 'Rtest_netlists'      #Set folder to Rtest
 
 #Import libraries
 import numpy as np
@@ -31,8 +31,8 @@ rng = np.random.default_rng(MASTER_SEED)
 data = getattr(__import__(f'{FOLDER_NAME}.{DATA_NAME}', fromlist = ['data']), 'data')     #Import net list data
 GRID_SIZE = data['grid_size']        #Extract grid size
 NET_COUNT = len(data['nets'])        #Extract number of nets
-netList = np.zeros((NET_COUNT, 7), dtype = np.int32)             #Create an empty array with 7 entries per net
-for i in range(NET_COUNT):                                       #Fill the empty list with data about each net
+netList = np.zeros((NET_COUNT, 7), dtype = np.int32)            #Create an empty array with 7 entries per net
+for i in range(NET_COUNT):                                      #Fill the empty list with data about each net
     netList[i] = [int(data['nets'][f'NET_{i}']['pins'][0][0]),  #[0]Pin0X
                   int(data['nets'][f'NET_{i}']['pins'][0][1]),  #[1]Pin0Y
                   int(data['nets'][f'NET_{i}']['pins'][1][0]),  #[2]Pin1X
@@ -42,7 +42,6 @@ for i in range(NET_COUNT):                                       #Fill the empty
                   0]                                            #[6]Final cost (0=unrouted)
 segList = [0] * NET_COUNT   #Create an empty list filled with a lists for each nets (normal python list for resizability) segList[net][segment][0:start, 1:end, 2:type(0=Via, 1=Hor, 2=Vert)][0:x, 1:y, 2:layer]
 layoutGrid = np.full((GRID_SIZE, GRID_SIZE, NUM_LAYERS, 5), -1, dtype = np.int32) #Create 3D array for layout and give each cell a few variables ([0]what net is on this cell, [1]what segment of net(prioratize start of next for overlap), [2]calculated cost from here to destination, [3]actual cost start to here, [4]net currently attempting route on cell
-
 
 #Functions
 def netCostStartToCell (x: int, y: int, z:int, net: int, seg: int) -> int:  #Find the actual cost of a net up until a given cell
@@ -143,12 +142,9 @@ def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
             if layoutGrid[x][int(step)][z][0] not in {-1, net}:
                 return False
     return True
-    #Maybe using linspace or the if not in are inefficient because this gets slow
 #def costCellToLastSeg 
 #Trace the currently tracing variables back to the last segment in the net
 #Need to clear the currently tracing net variable for all cells at the end of each search
-
-
 
 #Start routing
 startTime = time.perf_counter()     #Start timer
@@ -161,7 +157,7 @@ for i in range(NET_COUNT):  #Manually add start and end vias for each net to lay
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 0, i), -1, i]
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
 
-#Attempt line / L pattern match on layers M2-M5. Reserve M6-M9 for advanced routing. Lock any 1 length routes on M2 and M3, those are optimal
+#Attempt pattern routing
 if maxPatternSize != 0:     #Skip pattern routing is max size is 0
     patternLength = 1       #Set initial max HPWL size to pattern route as 1
     maxSizeTrack = 0        #Initialize temporary value for tracking largest HPWL
@@ -171,35 +167,35 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
     vertFail = 0
     LAttempt = 0
     LFail = 0
-    if maxPatternSize == -1:    #If max pattern size is adaptive
-        for i in range(NET_COUNT):   #Iterate throught the nets
-            if maxPatternSize < netList[i][4]:   #And find the largest HPWL
-                maxPatternSize = netList[i][4]    #Update value
+    if maxPatternSize == -1:                    #If max pattern size is adaptive
+        for i in range(NET_COUNT):              #Iterate throught the nets
+            if maxPatternSize < netList[i][4]:  #And find the largest HPWL
+                maxPatternSize = netList[i][4]  #Update value
     while(1):
-        nextSmallestLength = GRID_SIZE * 2   #Reset next smallest tracker
-        for i in range(NET_COUNT):   #For all nets
-            x0 = netList[i][0]  #I added these to make it faster, it didn't, but it made it a lot easier to read so I kept it
+        nextSmallestLength = GRID_SIZE * 2      #Reset next smallest tracker
+        for i in range(NET_COUNT):              #For all nets
+            x0 = netList[i][0]                  #I added these to make it faster, it didn't, but it made it a lot easier to read so I kept it
             y0 = netList[i][1]
             x1= netList[i][2]
             y1 = netList[i][3]
             hpwl = netList[i][4]
-            #if netList[i][6] == 0:  #If the net is unrouted
-            if hpwl == patternLength:          #If the HPWL of this net is small enough
-                if x0 == x1:      #If the start and end are on the same x
+            if hpwl == patternLength:           #If the HPWL of this net is small enough
+                if x0 == x1:                    #If the start and end are on the same x
                     vertAttempt = vertAttempt + 1
-                    if segOpen(i, x0, y0, 1, y1, 2):   #Check vertical line from start to end on M2
+                    if segOpen(i, x0, y0, 1, y1, 2):        #Check vertical line from start to end on M2
                         print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M2')
                         addVert(i, x0, y0, y1, 1) 
                     elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0) and SUBOPTIMAL_PATTERNS: #If M2 vertical line fails, Check via from M2 to M3 and M3 to M4 at start and M4 to M3 and M3 to M2 at end
-                        if segOpen(i, x0, y0, 3, y1, 2):  #Check vertical line on M4
+                        if segOpen(i, x0, y0, 3, y1, 2):    #Check vertical line on M4
                             print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M4')
                             addVia(i, x0, y0, 1, 2)
                             addVia(i, x0, y0, 2, 3)
                             addVert(i, x0, y0, y1, 3) 
                             addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1) #If I come back to it, I should lock the optimal pattern routes
-                    #maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
-                    #Or try staggared routes
+                            addVia(i, x1, y1, 2, 1)         
+#If I come back to it, I should lock the optimal pattern routes
+#maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
+#Or try staggared routes
                         elif ADDITIONAL_PATTERN_LAYERS:
                             if segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0): #If M4 vertical line fails, Check via from M4 to M5 and M5 to M6 at start and M6 to M5 and M5 to M4 at end
                                 if segOpen(i, x0, y0, 5, y1, 2):  #Check vertical line on M6
@@ -252,7 +248,7 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-                    #maybe try X spaces to left/right U routes
+#maybe try X spaces to left/right U routes
                             elif ADDITIONAL_PATTERN_LAYERS:
                                 if segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M5 horizontal line fails, Check vias at start from M5 to M6 and M6 to M7, and end from M7 to M6 and M6 to M5
                                     if segOpen(i, x0, y0, 6, x1, 1):  #Check horizontal line from start to end on M7
@@ -292,7 +288,6 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                             else:horiFail= horiFail + 1                  
                         else:horiFail = horiFail + 1                    
                     else:horiFail = horiFail + 1
-                   
                 else:                                   #Start and End point don't share x or y axis
                     LAttempt = LAttempt + 1
                     if segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check the vertical path on M2 to intersection, and via from M2 to M3 at intersection, and via on end point from M3 to M2
@@ -393,7 +388,7 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-                            #Add lower M6 combos
+#Add lower M6 combos
                             elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
                                 print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M6')
                                 addVia(i, x0, y0, 1, 2)
@@ -422,7 +417,7 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-                            #Add lower M7 combos
+#Add lower M7 combos
                             elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
                                 print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M8')
                                 addVia(i, x0, y0, 1, 2)
@@ -455,11 +450,11 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-                            #Add lower M8 combos
+#Add lower M8 combos
                             else: LFail = LFail + 1
                         else: LFail = LFail + 1
-                        #Can optimize L's by tracking previously checked segments
-                        #Yeah I'm not doing z routes... unless... nah nevermind... weelllllll  IDK, I think at that point I should do a real router
+#Can optimize L's by tracking previously checked segments
+#Yeah I'm not doing z routes... unless... nah nevermind... weelllllll  IDK, I think at that point I should do a real router
                     else: LFail = LFail + 1
             if hpwl < nextSmallestLength and hpwl > patternLength:  #Every iteration scan each net to find the next smallest value
                     nextSmallestLength = hpwl
@@ -487,19 +482,66 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
 
 #Optimize by only calculating predicted and actual cost on segment end points
 
-
-
-#Check results for validity
-#Follow all routes and make sure the layout matches the segments, and the costs all match
-
-#Compute, format, and export results
+#Compute results
 routedNets = 0                          #Find what % of nets were routed
 for i in range(NET_COUNT):
     if netList[i][6] != 0:
         routedNets = routedNets + 1
-finalCost = sum(entry[6] for entry in netList)
-print(f'vertAttempt = {vertAttempt}, vertFail = {vertFail}, horiAttempt = {horiAttempt}, horiFail = {horiFail}, LAttempt = {LAttempt}, LFail = {LFail}')
+finalCost = sum(entry[6] for entry in netList)  #Find the final cost
+print(f'vertAttempt = {vertAttempt}, vertFail = {vertFail}, horiAttempt = {horiAttempt}, horiFail = {horiFail}, LAttempt = {LAttempt}, LFail = {LFail}') #Print summary of unrouted nets
 print(f'Routed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds')  #Print % of nets that were routed and how long it took
+
+#Check results for validity
+cost = 0
+for i in range(NET_COUNT):
+    netCost = 0
+    for j in range(len(segList[i])):
+        netCost = 0
+        if segList[i][j][2] == 0:   #For vias
+            if netList[i][6] != 0:
+                cost = cost + 2
+            if segList[i][j][0][0] != segList[i][j][1][0] or segList[i][j][0][1] != segList[i][j][1][1]:
+                print(f'Error: Via on Net {i}, Segment{j} did not go the expected direction')
+            if abs(segList[i][j][0][2] - segList[i][j][1][2]) != 1:
+                print(f'Error: Via on Net {i}, Segment{j} is not the correct length')
+        elif segList[i][j][2] == 1: #For horizontal segments
+            if netList[i][6] != 0:
+                cost = cost + abs(segList[i][j][0][0] - segList[i][j][1][0])
+            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][1] != segList[i][j][1][1]:
+                print(f'Error: Horizontal on Net {i}, Segment{j} did not go the expected direction')
+        elif segList[i][j][2] == 2: #For vertical segments
+            if netList[i][6] != 0:
+                cost = cost + abs(segList[i][j][0][1] - segList[i][j][1][1])
+            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][0] != segList[i][j][1][0]:
+                print(f'Error: Vertical on Net {i}, Segment{j} did not go the expected direction')
+        else: 
+            print(f'Error: Invalid segment direction on Net {i}, Segment{j}')
+        if j != len(segList[i]) - 1 and netList[i][6] != 0: #If it's not the last segment and the net is routed
+            if segList[i][j][1] != segList[i][j+1][0]:      #Make sure the end of this one matches the start of the next
+                print(f'Error: The end of Net {i}, Segment {j} does not match the start of Segment {j + 1}')
+    cost = netCost + cost
+    if netList[i][6] != 0:
+        pos = [netList[i][0], netList[i][1], 0]
+        while (pos != [netList[i][0], netList[i][1], 0]):
+            if layoutGrid[pos[0] + 1][pos[1]][pos[2]][0] == i:
+                pos[0] = pos[0] + 1
+            elif layoutGrid[pos[0] - 1][pos[1]][pos[2]][0] == i:
+                pos[0] = pos[0] - 1
+            elif layoutGrid[pos[0]][pos[1] + 1][pos[2]][0] == i:
+                pos[1] = pos[1] + 1
+            elif layoutGrid[pos[0]][pos[1] - 1][pos[2]][0] == i:
+                pos[1] = pos[1] - 1
+            elif layoutGrid[pos[0]][pos[1]][pos[2] + 1][0] == i:
+                pos[2] = pos[2] + 1
+            elif layoutGrid[pos[0]][pos[1]][pos[2] - 1][0] == i:
+                pos[2] = pos[2] - 1
+            else:
+                print(f'Error: Unable to trace Net {i}')
+                break
+if cost != finalCost:
+    print(f'Error: calculated cost was {finalCost}, but verrified cost was {cost}')
+
+#Format and export results
 print(f"Exporting reults to ./Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}.py ...")
 
 output = {                              #Create output data structure, add grid size and final cost
@@ -531,8 +573,9 @@ for i in range(NET_COUNT):               #Populate net information
 output_content = "data = " + pprint.PrettyPrinter(indent=4).pformat(output)             # Format output data
 with open(f'Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}.py', 'w') as f:                        # Open export location
     f.write(output_content)                                                             # Export data
+
+#Plot results
 if GENERATE_GRAPHS:
-    #Plot
     print('Graphing results...')
     from mpl_toolkits import mplot3d
     import matplotlib.pyplot as plt
