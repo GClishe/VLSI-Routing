@@ -6,8 +6,8 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-#from Rtest.Rtest_1500_50000 import data
-from Reval.Reval_1000_40000 import data
+#from Rtest.Rtest_100_500 import data
+from Reval.Reval_1000_30000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -43,9 +43,9 @@ class RouterParams:
     cong_p: float = 2.0
 
     # global routing params
-    do_global_for_types: tuple[str, ...] = ("LONG",)   # alternative might be ("MEDIUM","LONG") if global routing is to be done on medium type nets
+    do_global_for_types: tuple[str, ...] = ("LONG","MEDIUM")   # alternative might be ("MEDIUM","LONG") if global routing is to be done on medium type nets
     global_cong_weight: float = 0.002                  # global routing step cost defined as 1 + congestion_weight * tile_cong. tile_cong counts how many occupied cells are present in the tile, which may be large. therefore, global_cong_weight should be small
-    global_turn_penalty: float = 0.0                   # penalty for changing direction in global routing
+    global_turn_penalty: float = 0.5                   # penalty for changing direction in global routing
 
     # penalties associated with leaving global routing corridor while doing detailed routing
     # field is used for corridor_band_cost because it is mutable; we need to ensure that different instances of the RouterParams class contain separate lists if we only wish to mutate corridor_band_cost for only one of the instances. It is not too necessary here, but it is good practice. 
@@ -59,6 +59,10 @@ class RouterParams:
     relax_corridor_on_retry: bool = True               # disable corridor on retries
     bump_cong_alpha_on_retry: float = 1.5              # multiply cong_alpha by this each retry. Determines how much congestion penalty increases each retry
     max_requeue_per_net: int = 20                      # number of times a net can be placed back into the queue after being ripped up. Prevents infinite ripup - reroute loops
+
+    hist_weight: float = 2.0         # multiplier on history term in congestion penalty
+    hist_inc: float = 1.0            # how much to increment history when tile is over threshold
+    hist_util_thresh: float = 0.10   # only build history in tiles above this utilization
 
 class RoutingDB:
     """
@@ -105,6 +109,7 @@ class RoutingDB:
         self.num_tiles = math.ceil(grid_size/self.tile_size)
 
         self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)] # 2D array tracking tile congestion. tile_cong[tx][ty] reports how many committed nets pass through the tile (tx,ty)
+        self.tile_hist = [[0.0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)]  # creates tile history term
 
         self.net_routes = {}                                                                 # dict that contains net_name -> list of bitarray indices for cells on that net
               
@@ -175,8 +180,8 @@ class RoutingDB:
 
     def congestion_penalty(self, x: int, y: int) -> float:
         """
-        Return a penalty for entering congested tiles. Penalty is equal to a * util^p, where util 
-        is a measure of how occupied a tile is. a and p are values to tune. 
+        Return a penalty for entering congested tiles. After ripup, utilization drops and so congestion penalty would ordinarily disappear.
+        However, we also add a history penalty that allows the router to 'remember' that the tile was problematic beforehand
         """
         tx = x // self.tile_size
         ty = y // self.tile_size
@@ -189,8 +194,10 @@ class RoutingDB:
         # these values should be tuned
         a = self.params.cong_alpha
         p = self.params.cong_p
+        base = a * (util ** p)
+        hist = self.params.hist_weight * self.tile_hist[tx][ty]     # considers tile history in addition to its congestion
 
-        return a * (util ** p)
+        return base + hist
 
     def commit_route(self, net_name: str, path: list[tuple[int, int, int]]):
         """
@@ -292,6 +299,22 @@ class RoutingDB:
         cost += self.congestion_penalty(nx, ny)     # add a congestion penalty
 
         return cost
+    
+    def update_history_penalties(self):
+        """
+        If a tile's utilization exceeds hist_util_thresh, increment its history penalty.
+        Goal of the history penalty is to make the router stop visiting the same overfull areas. 
+        """
+        cap = self.tile_size * self.tile_size * self.num_layers     # tile capacity
+        thr = self.params.hist_util_thresh                          # history utilisation threshold
+        inc = self.params.hist_inc                                  # increment penalty factor
+
+        for tx in range(self.num_tiles):
+            for ty in range(self.num_tiles):
+                util = self.tile_cong[tx][ty] / cap
+                if util > thr:
+                    # increment proportional to how far above threshold we are
+                    self.tile_hist[tx][ty] += inc * (util - thr)
 
 def dist(c1, c2):
         #returns the manhattan distance between coordinates c1 and c2
@@ -790,7 +813,138 @@ def add_m1_vias_to_all_routes(routing_db, netlist):
 
     return routes_with_m1
 
+def try_l_shape(start, goal, routing_db, layers=(0,1)):
+    """
+    Tries a simple L route; vertical on even layer, horizontal on odd layer, with vias at the bend. Returns path or None.
+    Will be called before detailed A* is attempted.
+    """
+    (sx, sy, sl0) = start
+    (gx, gy, gl0) = goal
+
+    if sl0 != 0 or gl0 != 0:
+        # pin positions must always be on m2. the layers parameter doesnt need to have m2 on it, but the pins must at least start there. 
+        return None
+    
+    s_idx = routing_db.coordinate_to_idx(sx, sy, sl0)
+    g_idx = routing_db.coordinate_to_idx(gx, gy, gl0)
+
+    # vertical/horizontal layer depens on parity
+    a, b = layers
+    if (a % 2) == 0 and (b % 2) == 1:
+        v_layer, h_layer = a, b
+    elif (a % 2) == 1 and (b % 2) == 0:
+        v_layer, h_layer = b, a
+    else:
+        # Need one even (vertical) and one odd (horizontal)
+        return None
+
+    def segment(a,b,layer):
+        """Helper function that draws straight line paths between a and b if it is possible to do so. If not, it returns None."""
+        # unpack a,b
+        (x0, y0) = a
+        (x1, y1) = b
+
+        path = []
+        if x0 == x1:
+            # if x0 == x1, then we need a vertical wire
+            step = 1 if y1 >= y0 else -1        # step upwards if y1 is greater than y0, else step down
+            for y in range(y0, y1 + step, step):# on each iteration, we step closer. `step` field increments or decrements, depending on if y0 is smaller or larger than y1, respetively.
+                # check if we are allowed to step toward y1 without running into something
+                if not routing_db.is_free(x0, y, layer) and not routing_db.is_pin(x0, y, layer):
+                    return None
+                path.append((x0, y, layer))
+        elif y0 == y1:
+            # same as above. We incrementally step toward x1 from x0 and return None if we are blocked at any point along the way
+            step = 1 if x1 >= x0 else -1
+            for x in range(x0, x1 + step, step):
+                if not routing_db.is_free(x, y0, layer) and not routing_db.is_pin(x, y0, layer):
+                    return None
+                path.append((x, y0, layer))
+        else:
+            # if neither x values or y values are the same, then we cannot make a straight segment between a and b. 
+            return None
+        return path
+    
+    def via_stack(x: int, y: int, l0: int, l1: int) -> list[tuple[int,int,int]]:
+        """Inclusive via stack from l0 -> l1 in the order of traversal."""
+        if l0 == l1:
+            return [(x, y, l0)]
+        step = 1 if l1 > l0 else -1
+        return [(x, y, l) for l in range(l0, l1 + step, step)]
+    
+    def cell_ok(x: int, y: int, layer: int) -> bool:
+        """Blocks wires and pins unless it's exactly this net's endpoints."""
+        if not routing_db.in_bounds(x, y, layer):
+            return False
+
+        idx = routing_db.coordinate_to_idx(x, y, layer)
+
+        # cannot collide with existing wires
+        if routing_db.occ[idx]:
+            return False
+
+        # pins are blocked unless this coordinate is exactly start or goal
+        if routing_db.pin_occ[idx] and idx not in (s_idx, g_idx):
+            return False
+
+        return True
+
+    def stack_ok(stack: list[tuple[int, int, int]]) -> bool:
+        """Helper function to validate an entire via stack because I have had problems with this."""
+        return all(cell_ok(x, y, l) for (x, y, l) in stack)
+
+    # we need to try creating bends in both the valid locations; (sx, gy) and (gx, sy). One might be blocked, so we try both before we say that we cant create an L route. 
+    # option A: vertical (even) then horizontal (odd): bend at (sx, gy)
+    bendA = (sx, gy)
+    vstA = via_stack(sx, sy, 0, v_layer)        # creates via stack from layer 0 to V_layer where we start
+    if stack_ok(vstA):
+        p1A = segment((sx, sy), bendA, v_layer)  # vertical segment from start to bend 
+        if p1A is not None:
+            vbA = via_stack(sx, gy, v_layer, h_layer)      # create via stack from bend down to h_layer
+            if stack_ok(vbA):
+                p2A = segment(bendA, (gx, gy), h_layer)    # horizontal segment from bend to goal
+                if p2A is not None:
+                    vgoA = via_stack(gx, gy, h_layer, 0)   # via stack from goal (on h_layer) to m2
+                    if stack_ok(vgoA):
+                        # combines all subpaths (removing intersection duplicates)
+                        pathA = (
+                            [(sx, sy, 0)]
+                            + vstA[1:]   # 0 -> v_layer
+                            + p1A[1:]    # along v_layer
+                            + vbA[1:]    # v_layer -> h_layer
+                            + p2A[1:]    # along h_layer
+                            + vgoA[1:]   # h_layer -> 0
+                        )
+                        if pathA[0][2] == 0 and pathA[-1][2] == 0:
+                            return pathA
+
+    # Option B: horizontal (odd) then vertical (even): bend at (gx, sy)
+    bendB = (gx, sy)
+    sthB = via_stack(sx, sy, 0, h_layer)
+    if stack_ok(sthB):
+        q1B = segment((sx, sy), bendB, h_layer)  # horizontal
+        if q1B is not None:
+            qbB = via_stack(gx, sy, h_layer, v_layer)
+            if stack_ok(qbB):
+                q2B = segment(bendB, (gx, gy), v_layer)  # vertical
+                if q2B is not None:
+                    qgoB = via_stack(gx, gy, v_layer, 0)
+                    if stack_ok(qgoB):
+                        pathB = (
+                            [(sx, sy, 0)]
+                            + sthB[1:]   # 0 -> h_layer
+                            + q1B[1:]    # along h_layer
+                            + qbB[1:]    # h_layer -> v_layer
+                            + q2B[1:]    # along v_layer
+                            + qgoB[1:]   # v_layer -> 0
+                        )
+                        if pathB[0][2] == 0 and pathB[-1][2] == 0:
+                            return pathB
+
+    return None
+
 """
+
 ========================================================================================
 BEGIN MAIN
 ========================================================================================
@@ -890,6 +1044,12 @@ while work_q and pops < max_total_pops:
         # if we have already failed once and we allow corridor relaxing after retry, then we delete the global route corridor, which allows more freedom for the detailed route, but at the cost of added overhead
         if attempt > 0 and local_params.relax_corridor_on_retry:
             global_route = None
+        
+        # before we try A* for detailed routing, we first see if we can create an L-shaped route between the two pins
+        quick = try_l_shape(start, goal, routing_db, layers=(2,3))
+        if quick is not None:
+            detailed_route = quick
+            break
 
         detailed_route = A_star_detailed(start, goal, routing_db, global_route, params=local_params, band_limit=(band_limit if band_limit is not None else math.inf))
 
@@ -925,7 +1085,8 @@ while work_q and pops < max_total_pops:
                     print(f"{rip_net} has failed to route {local_params.max_requeue_per_net} times. Marking as a permanent fail.")
                     permanent_fail.add(rip_net)
 
-        # after ripup, we increase the congestion pressure so that we avoid recreating the same blockage
+        # after ripup, we update history penalties and increase the congestion pressure so that we avoid recreating the same blockage
+        routing_db.update_history_penalties()
         local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry
 
     if detailed_route is None:
