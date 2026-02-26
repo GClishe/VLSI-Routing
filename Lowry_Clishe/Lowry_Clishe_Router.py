@@ -110,29 +110,36 @@ def addVert (net: int, x:int, yStart: int, yEnd:int, z:int):     #Adds a horizon
         netList[net][6] = cost                                      #Use this cost to update netList
 
 def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
+    stepIteration = 1
     if dir == 0:    #Via
-        if (abs(z-dest) != 1):
+        if (abs(z - dest) != 1):    #Check that via is only one long
             print('Error: Attempted to place illegal via')
             return False
-        for step in np.linspace(z, dest, abs(z-dest) + 1):
-            if (layoutGrid[x][y][int(step)][0] not in {-1, net}):#!= -1) or (layoutGrid[x][y][int(step)][0] != net):
+        if  dest < z:
+            stepIteration = -1
+        for step in range(z, dest + stepIteration, stepIteration):
+            if (layoutGrid[x][y][int(step)][0] not in {-1, net}):
                 return False
-    elif dir == 1:    #Hori
-        if z%2 == 1:
+    elif dir == 1:      #Hori
+        if z % 2 == 1:  #Check that horizontal segment is on an even layer (M1 = index 0)
             print('Error: Attempted to place horizontal segment on vertical layer')
             return False
-        for step in np.linspace(x, dest, abs(x-dest) + 1):
+        if dest < x:
+            stepIteration = -1
+        for step in range(x, dest + stepIteration, stepIteration):
             if layoutGrid[int(step)][y][z][0] not in {-1, net}:
                 return False
-    else:           #Vert
-        if z%2 == 0:
+    else:               #Vert
+        if z % 2 == 0:  #Check that vertival segment is on an odd layer (M1 = index 0)
             print('Error: Attempted to place vertical segment on horizontal layer')
             return False
-        for step in np.linspace(y, dest, abs(y-dest) + 1):
+        if dest < y:
+            stepIteration = -1
+        for step in range(y, dest + stepIteration, stepIteration):
             if layoutGrid[x][int(step)][z][0] not in {-1, net}:
                 return False
     return True
-
+    #Maybe using linspace or the if not in are inefficient because this gets slow
 #def costCellToLastSeg 
 #Trace the currently tracing variables back to the last segment in the net
 #Need to clear the currently tracing net variable for all cells at the end of each search
@@ -151,47 +158,53 @@ for i in range(netCount):  #Manually add start and end vias for each net to layo
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
 
 #Attempt line / L pattern match on layers M2-M5. Reserve M6-M9 for advanced routing. Lock any 1 length routes on M2 and M3, those are optimal
-patternLength = 1
-if maxPatternSize == -1:    #Auto patern match size
-    maxPatternSize = 2 * gridSize
 if maxPatternSize != 0:     #Skip pattern routing is max size is 0
+    patternLength = 1       #Set initial max HPWL size to pattern route as 1
+    maxSizeTrack = 0        #Initialize temporary value for tracking largest HPWL
+    if maxPatternSize == -1:    #If max pattern size is adaptive
+        for i in range(netCount):   #Iterate throught the nets
+            if maxPatternSize < netList[i][4]:   #And find the largest HPWL
+                maxPatternSize = netList[i][4]    #Update value
     while(1):
-        nextSmallestLength = maxPatternSize     #Reset next smallest tracker
+        nextSmallestLength = gridSize * 2   #Reset next smallest tracker
         for i in range(netCount):   #For all nets
             if netList[i][6] == 0:  #If the net is unrouted
                 if netList[i][4] <= patternLength:          #If the HPWL of this net is small enough
                     if netList[i][0] == netList[i][2]:      #If the start and end are on the same x
-                        if segOpen(i, netList[i][0], netList[i][1], 1, netList[i][3], 2):   #Attempt a vertical line on M2
-                            print(f'Routed Net {i} with vertical line on M2')
+                        if segOpen(i, netList[i][0], netList[i][1], 1, netList[i][3], 2):   #Check vertical line from start to end on M2
+                            print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M2')
                             addVert(i, netList[i][0], netList[i][1], netList[i][3], 1) 
-                        elif segOpen(i, netList[i][0], netList[i][1], 3, netList[i][3], 2) and segOpen(i, netList[i][0], netList[i][1], 1, 2, 0) and segOpen(i, netList[i][0], netList[i][1], 2, 3, 0) and segOpen(i, netList[i][2], netList[i][3], 3, 2, 0) and segOpen(i, netList[i][2], netList[i][3], 2, 1, 0):  #If M2 vertical line fails, try M4 and needed vias
-                            print(f'Routed Net {i} with vertical line on M4')
-                            addVia(i, netList[i][0], netList[i][1], 1, 2)
-                            addVia(i, netList[i][0], netList[i][1], 2, 3)
-                            addVert(i, netList[i][0], netList[i][1], netList[i][3], 3) 
-                            addVia(i, netList[i][2], netList[i][3], 3, 2)
-                            addVia(i, netList[i][2], netList[i][3], 2, 1)
+                        elif segOpen(i, netList[i][0], netList[i][1], 1, 2, 0) and segOpen(i, netList[i][0], netList[i][1], 2, 3, 0) and segOpen(i, netList[i][2], netList[i][3], 3, 2, 0) and segOpen(i, netList[i][2], netList[i][3], 2, 1, 0): #If M2 vertical line fails, Check via from M2 to M3 and M3 to M4 at start and M4 to M3 and M3 to M2 at end
+                            if segOpen(i, netList[i][0], netList[i][1], 3, netList[i][3], 2):  #Check vertical line on M4
+                                print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M4')
+                                addVia(i, netList[i][0], netList[i][1], 1, 2)
+                                addVia(i, netList[i][0], netList[i][1], 2, 3)
+                                addVert(i, netList[i][0], netList[i][1], netList[i][3], 3) 
+                                addVia(i, netList[i][2], netList[i][3], 3, 2)
+                                addVia(i, netList[i][2], netList[i][3], 2, 1)
                         #maybe try X spaces to left/right U routes
                     elif netList[i][1] == netList[i][3]:    #If the start and end are on the same y
-                        if segOpen(i, netList[i][0], netList[i][1], 2, netList[i][2], 1) and segOpen(i, netList[i][0], netList[i][1], 1, 2, 0) and segOpen(i, netList[i][2], netList[i][3], 2, 1, 0):  #Try M3 horizontal line and needed vias
-                            print(f'Routed Net {i} with horizontal line on M3')
-                            addVia(i, netList[i][0], netList[i][1], 1, 2)
-                            addHori(i, netList[i][0], netList[i][2], netList[i][1], 2) 
-                            addVia(i, netList[i][2], netList[i][3], 2, 1)
-                        elif segOpen(i, netList[i][0], netList[i][1], 4, netList[i][2], 1) and segOpen(i, netList[i][0], netList[i][1], 1, 2, 0) and segOpen(i, netList[i][2], netList[i][3], 2, 1, 0) and segOpen(i, netList[i][0], netList[i][1], 2, 3, 0) and segOpen(i, netList[i][2], netList[i][3], 3, 2, 0) and segOpen(i, netList[i][0], netList[i][1], 3, 4, 0) and segOpen(i, netList[i][2], netList[i][3], 4, 3, 0):  #Try M3 horizontal line and needed vias
-                            print(f'Routed Net {i} with horizontal line on M5')
-                            addVia(i, netList[i][0], netList[i][1], 1, 2)
-                            addVia(i, netList[i][0], netList[i][1], 2, 3)
-                            addVia(i, netList[i][0], netList[i][1], 3, 4)
-                            addHori(i, netList[i][0], netList[i][2], netList[i][1], 4) 
-                            addVia(i, netList[i][2], netList[i][3], 4, 3)
-                            addVia(i, netList[i][2], netList[i][3], 3, 2)
-                            addVia(i, netList[i][2], netList[i][3], 2, 1)
+                        if segOpen(i, netList[i][0], netList[i][1], 1, 2, 0) and segOpen(i, netList[i][2], netList[i][3], 2, 1, 0): #Check via at start from M2 to M3 and via at end from M3 to M2
+                            if segOpen(i, netList[i][0], netList[i][1], 2, netList[i][2], 1):  #Try M3 horizontal line from start to end
+                                print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M3')
+                                addVia(i, netList[i][0], netList[i][1], 1, 2)
+                                addHori(i, netList[i][0], netList[i][2], netList[i][1], 2) 
+                                addVia(i, netList[i][2], netList[i][3], 2, 1)
+                            elif segOpen(i, netList[i][0], netList[i][1], 2, 3, 0) and segOpen(i, netList[i][2], netList[i][3], 3, 2, 0) and segOpen(i, netList[i][0], netList[i][1], 3, 4, 0) and segOpen(i, netList[i][2], netList[i][3], 4, 3, 0): #If M3 horizontal line fails, Check vias at start from M3 to M4 and M4 to M5, and end from M5 to M4 and M4 to M3
+                                if segOpen(i, netList[i][0], netList[i][1], 4, netList[i][2], 1):  #Check M3 horizontal line from start to end on M5
+                                    print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M5')
+                                    addVia(i, netList[i][0], netList[i][1], 1, 2)
+                                    addVia(i, netList[i][0], netList[i][1], 2, 3)
+                                    addVia(i, netList[i][0], netList[i][1], 3, 4)
+                                    addHori(i, netList[i][0], netList[i][2], netList[i][1], 4) 
+                                    addVia(i, netList[i][2], netList[i][3], 4, 3)
+                                    addVia(i, netList[i][2], netList[i][3], 3, 2)
+                                    addVia(i, netList[i][2], netList[i][3], 2, 1)
                         #maybe try X spaces to left/right U routes
                     else:                                   #Start and End point don't share x or y axis
                         if segOpen(i, netList[i][0], netList[i][1], 1, netList[i][3], 2) and segOpen(i, netList[i][0], netList[i][3], 2, 3, 0) and segOpen(i, netList[i][2], netList[i][3], 3, 2, 0): #Check the vertical path on M2 to intersection, and via from M2 to M3 at intersection, and via on end point from M3 to M2
                             if segOpen(i, netList[i][0], netList[i][3], 2, netList[i][2], 1): #Check horizontal path from intersection to end on M3
-                                print(f'Routed Net {i} with L on M2 and M3')
+                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M3')
                                 addVert(i, netList[i][0], netList[i][1], netList[i][3], 1)
                                 addVia(i, netList[i][0], netList[i][3], 1, 2)
                                 addHori(i, netList[i][0], netList[i][2], netList[i][3], 2)
@@ -205,13 +218,15 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 #Route
                         #elif #lower hori then lower/ upper vert
                         #elif #upper hori then lower/upper vert
-                        #Yeah I'm not doing z routes... unless... nah nevermind
-
-            if netList[i][4] < nextSmallestLength and netList[i][4] > patternLength:  #If it's not small enough, keep track of the next smallest size for next time
+                        #Yeah I'm not doing z routes... unless... nah nevermind... weelllllll
+            if netList[i][4] < nextSmallestLength and netList[i][4] > patternLength:  #Every iteration scan each net to find the next smallest value
                     nextSmallestLength = netList[i][4]
-        patternLength = nextSmallestLength
-        if nextSmallestLength >= maxPatternSize:  #If no next smallest was found
+        if nextSmallestLength == patternLength: #If no next smallest was found  
             break   #End pattern routing
+        elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the mad pattern size
+            break   #End pattern routing   
+        patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
+
 
 
 
