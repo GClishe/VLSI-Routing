@@ -53,11 +53,12 @@ class RouterParams:
     corridor_far_penalty: float = 3.0                  # penalty for entering cells very far from global route corridor is corridor_band_cost[-1] + corridor_far_penalty
     corridor_util_thresh: float = 0.02                 # only penalize leaving corridor if util >= thresh
 
-    # --- robustness / retries ---
+    # params for retrying
     max_reroute_attempts: int = 3                      # how many times rerouting will occur
     ripup_k: int = 10                                  # how many previously-routed nets to rip up on failure
     relax_corridor_on_retry: bool = True               # disable corridor on retries
     bump_cong_alpha_on_retry: float = 1.5              # multiply cong_alpha by this each retry. Determines how much congestion penalty increases each retry
+    max_requeue_per_net: int = 20                      # number of times a net can be placed back into the queue after being ripped up. Prevents infinite ripup - reroute loops
 
 class RoutingDB:
     """
@@ -649,7 +650,7 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
     return None
 
 def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
-    
+
     WIRE_COST = 1.0
     VIA_COST  = 2.0
 
@@ -788,9 +789,14 @@ params = RouterParams(
     ripup_k=10,
     relax_corridor_on_retry=True,
     bump_cong_alpha_on_retry=1.5,
+    max_requeue_per_net=20,
     )
 
 routing_order: list[str] = create_routing_order(netlist)       # creates a routing order in the form of a list of net names
+work_q = deque(routing_order)                                  # create a double-ended queue for the routing order to allow us to re-route nets after they are ripped up 
+in_queue = set(routing_order)                                  # creates a set for quick lookups for which nets are currently in the queue
+routed_set = set()                                             # contains the nets currently committed (not ripped up)
+reroute_count = {}                                             # dict containing net-name -> times requeued due to ripup
 
 # instantiate the routing database
 routing_db = RoutingDB(
@@ -803,9 +809,19 @@ for net_name, net in netlist["nets"].items():
         idx = routing_db.coordinate_to_idx(x, y, 0)
         routing_db.pin_occ[idx] = 1
 
-routed_nets = []
-failed_routes = 0
-for net_name in routing_order:
+pops = 0
+max_total_pops= 10 * len(routing_order)     # maximum number of queue pops that are allowed. Helps to prevent infinite ripup -> reroute loops
+permanent_fail = set()
+
+while work_q and pops < max_total_pops:
+    net_name = work_q.popleft()             # grabbing the leftmost net from the queue
+    in_queue.remove(net_name)               # removing that net from the lookup set
+    pops += 1
+
+    # if the net belongs to the set of permanently failed nets, skip it. 
+    if net_name in permanent_fail:
+        continue
+
     (x0, y0), (x1, y1) = netlist["nets"][net_name]["pins"]  # extracts pins
     start = (x0, y0, 0)     # places start on m2
     goal  = (x1, y1, 0)     # places goal on m2
@@ -834,21 +850,55 @@ for net_name in routing_order:
             break
         
         # if we reach this point, then we have failed to route. Now we ripup some nets and try again
-        rip_list = choose_ripup_nets(routing_db, routed_nets, start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
+        rip_list = choose_ripup_nets(routing_db, list(routed_set), start, goal, k=local_params.ripup_k)      # list of nets that we are going to ripup.
         for rip_net in rip_list:
+            # only rip up nets that are actually routed
+            if rip_net not in routed_set:
+                continue
+
             routing_db.rip_up(rip_net)
-            routed_nets.remove(rip_net)
-        
+            routed_set.remove(rip_net)
+
+            # now we need to re-queue ripped net so it gets routed again later
+            cnt = reroute_count.get(rip_net,0)      # gets the current number of times that rip_net has been re-queued
+            cnt += 1                                # increments the count
+            reroute_count[rip_net] = cnt            # writes incremented count back to dict
+            if reroute_count[rip_net] <= local_params.max_requeue_per_net:
+                # if rip_net is not already in the queue or marked as permanently failed, put it back in the queue
+                if rip_net not in in_queue and rip_net not in permanent_fail:
+                    work_q.append(rip_net)
+                    in_queue.add(rip_net)                        
+                else:
+                    # it has been ripped up and readded too many times. mark as permanent fail
+                    print(f"{rip_net} has failed to route {local_params.max_requeue_per_net} times. Marking as a permanent fail.")
+                    permanent_fail.add(rip_net)
+
         # after ripup, we increase the congestion pressure so that we avoid recreating the same blockage
         local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry
 
     if detailed_route is None:
-        print(f"FAILED to route {net_name} after {local_params.max_reroute_attempts} attempts.")
-        failed_routes += 1
-        continue    # for the moment, when a net fails to route, i want to at least finish so that by the end I can figure out a percentage of nets that actually did get routed, which might help with tuning later on
+        # detailed route failed for this net. We will add it back to queue for retrying, as long as it hasnt reached the max number of requeues. 
+        cnt = reroute_count.get(net_name,0)      # gets the current number of times that net_name has been re-queued
+        cnt += 1                                 # increments the count
+        reroute_count[net_name] = cnt            # writes incremented count back to dict
+        if reroute_count[net_name] <= local_params.max_requeue_per_net:
+            if net_name not in in_queue:
+                work_q.append(net_name)
+                in_queue.add(net_name)
+        else:
+            permanent_fail.add(net_name)
+        continue
 
-    routing_db.commit_route(net_name, detailed_route)       # committing the detailed route to the database
-    routed_nets.append(net_name)
+    routing_db.commit_route(net_name, detailed_route)
+    routed_set.add(net_name)
+
+total_nets = len(routing_order)
+success_routes = len(routed_set)
+failed_routes = total_nets - success_routes
+
+print(f"Routing summary: {success_routes}/{total_nets} nets routed "
+      f"({100.0*success_routes/total_nets}%). Failed: {failed_routes}. "
+      f"Permanent fails: {len(permanent_fail)}. Pops: {pops}.")
 
 completed_routes = add_m1_vias_to_all_routes(routing_db, netlist)
 print(f"Total cost for this netlist is {total_routing_cost_from_routes(completed_routes)}")
