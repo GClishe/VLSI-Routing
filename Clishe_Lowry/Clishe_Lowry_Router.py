@@ -762,8 +762,9 @@ def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tupl
                 if 0 <= nx < routing_db.num_tiles and 0 <= ny < routing_db.num_tiles:
                     neigh.add((nx, ny))
     
-    window = routed_order[-5 * k:] if len(routed_order) > 5 * k else routed_order[:]    # grabbing the most recent 5*k entries. If less than that many entries exist, then grab all of them
-    recency_rank = {net: i for i, net in enumerate(window)}                             # ranking nets that increases with recency
+    # use the provided routed_nets list for recency information
+    window = routed_nets[-5 * k:] if len(routed_nets) > 5 * k else routed_nets[:]    # grabbing the most recent 5*k entries, or fewer if not available
+    recency_rank = {net: i for i, net in enumerate(window)}                             # ranking nets by recency
 
     scored = []
     for net in window:                 
@@ -774,11 +775,11 @@ def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tupl
     scored.sort(key=lambda t: (t[0], t[1]), reverse=True)               # sorting scored with priority given to score; ties broken with recency rank
 
     picks = [net for (s, _, net) in scored if s > 0]       # extracts all nets that overlap with the start/goal neighborhood
-    if len(picks) < k:                          # if picks is fewer than k, then we fill the remaining slots with most recent nets
-        for net in reversed(routed_order):       # reverses the list of routed nets so that more recent nets come first 
-            if net not in picks:                # add it to the list of picks if it's not already there
+    if len(picks) < k:                          # fill remaining slots with most recent nets if needed
+        for net in reversed(routed_nets):       # reversed so that most recent nets are considered first
+            if net not in picks:
                 picks.append(net)
-            if len(picks) == k:                 # as soon as we get k nets, we break. 
+            if len(picks) == k:
                 break
             
     return picks[:k] # picks may have more than k nets if there were lots of nets in start/goal neighbors, so we only grab the first k. 
@@ -1168,6 +1169,12 @@ params = RouterParams(
     relax_corridor_on_retry=True,
     bump_cong_alpha_on_retry=1.5,
     max_requeue_per_net=20,
+
+    max_time_per_net=60.0,
+
+    hist_weight=2.0,
+    hist_inc=1.0,
+    hist_util_thresh=0.10,
 )
 
 # attempt routing once with the default order, and then if we see trouble nets and we finished reasonably quickly, we try rerouting just the trouble nets with a different order to see if we can get more of them routed successfully
