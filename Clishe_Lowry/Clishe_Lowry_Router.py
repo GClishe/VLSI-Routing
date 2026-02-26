@@ -6,20 +6,20 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-from Rtest.Rtest_500_6000 import data
+#from Rtest.Rtest_500_6000 import data
 #from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
-#data = {   'grid_size': 100,
-#    'nets': {   'NET_0': {   'length': 3,
-#                             'pins': [(99, 56), (99, 59)],
-#                             'type': 'LOCAL'},
-#                'NET_1': {   'length': 48,
-#                             'pins': [(5, 72), (44, 63)],
-#                             'type': 'MEDIUM'},
-#                'NET_2': {   'length': 52,
-#                             'pins': [(43, 74), (5, 60)],
-#                             'type': 'LONG'}}}
+data = {   'grid_size': 100,
+    'nets': {   'NET_0': {   'length': 3,
+                             'pins': [(99, 56), (99, 59)],
+                             'type': 'LOCAL'},
+                'NET_1': {   'length': 48,
+                             'pins': [(5, 72), (44, 63)],
+                             'type': 'MEDIUM'},
+                'NET_2': {   'length': 52,
+                             'pins': [(43, 74), (5, 60)],
+                             'type': 'LONG'}}}
 
 
 @dataclass      # dataclass decorator useful for classes like these whose entire purpose is holding data. It simply automatically generates boilerplate methods like __init__ so that we do not have to. 
@@ -713,6 +713,40 @@ def total_routing_cost_from_db(routing_db, return_per_net: bool = False):
 
     return (total, per_net) if return_per_net else total            # returns either (total cost, per_net cost dict) or simply total cost if return_per_net is False
 
+def choose_ripup_nets(routing_db: RoutingDB, routed_nets: list[str], start: tuple[int, int, int], goal: tuple[int,int,int], k: int) -> list[str]:
+    (sx, sy, sl) = start
+    (gx, gy, gl) = goal
+    st = routing_db.get_tile(sx, sy, sl)
+    gt = routing_db.get_tile(gx, gy, gl)
+
+
+    neigh = set()
+    # add the neighbor tiles of st and gt to the neigh set. The loops below biuld a 3x3 box centered on each endpoint, clipped to grid boundaries
+    for (tx,ty) in [st, gt]:     # look at the start and goal tiles
+        for dx in [-1,0,1]:
+            for dy in [-1,0,1]:
+                nx, ny = tx + dx, ty + dy
+                if 0 <= nx < routing_db.num_tiles and 0 <= ny < routing_db.num_tiles:
+                    neigh.add((nx, ny))
+    
+    scored = []
+    for net in routed_nets[-5*k:]:                  # look only at the most recent 5*k nets. It might be worth increasing this value, but this will come with added overhead costs
+        tiles = set(routing_db.tiles_on_net(net))   # gets the tiles that the net passes through
+        score = len(tiles & neigh)                  # compute the number of tiles that the net occupies in the neighborhood of the endpoints
+        scored.append((score,net))                  # score each net by the number of neighbor cells they occupy
+
+    # scored looks like [(2, 'NET_1'), (0, 'NET_2'), ... ]
+    scored.sort(key=lambda t: (t[0], routed_nets.index(t[1])))  # creates a tuple (score, routed_nets index). Tuples are sorted first by their first element (score), then by their second if score is equal. Thus, we are ranking nets by their score, then for ties rank by routing age. 
+    picks = [net for (s, net) in scored if s > 0]       # extracts all nets that overlap with the start/goal neighborhood
+    if len(picks) < k:                          # if picks is fewer than k, then we fill the remaining slots with most recent nets
+        for net in reversed(routed_nets):       # reverses the list of routed nets so that more recent nets come first 
+            if net not in picks:                # add it to the list of picks if it's not already there
+                picks.append(net)
+            if len(picks) == k:                 # as soon as we get k nets, we break. 
+                break
+            
+    return picks[:k] # picks may have more than k nets if there were lots of nets in start/goal neighbors, so we only grab the first k. 
+        
 """
 ========================================================================================
 BEGIN MAIN
