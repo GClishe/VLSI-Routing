@@ -649,7 +649,7 @@ def A_star_detailed(start, goal, routing_db, global_route, params: RouterParams)
     return None
 
 def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
-
+    
     WIRE_COST = 1.0
     VIA_COST  = 2.0
 
@@ -660,10 +660,9 @@ def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
         if not path or len(path) < 2:
             continue
 
-        total = 0.0
         prev = path[0]                # to find the cost, we need to keep track of previous coordinate and current coordinate. previous coordinate initialized to the first one
 
-        for (x1,y1,l1) in path[1:]:   # starting the loop at the second coordinate, since previous coordinate is initialized to the first             
+        for (x1,y1,l1) in path[1:]:   # starting the loop at the second coordinate, since previous coordinate is initialized to the first          
             x0, y0, l0 = prev
 
             # finding the change in x, y, and layer
@@ -683,11 +682,9 @@ def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
                     f"(dx={dx}, dy={dy}, dl={dl})"
                 )
 
-            cost += WIRE_COST * wire_len
-            cost += VIA_COST  * via_len
+            total += WIRE_COST * wire_len
+            total += VIA_COST  * via_len
             prev = (x1, y1, l1)             # updating prev
-
-        total += cost
 
     return total
 
@@ -854,4 +851,4 @@ for net_name in routing_order:
     routed_nets.append(net_name)
 
 completed_routes = add_m1_vias_to_all_routes(routing_db, netlist)
-print(f"Total cost for this netlist is {total_routing_cost_from_db(routing_db)}")
+print(f"Total cost for this netlist is {total_routing_cost_from_routes(completed_routes)}")
