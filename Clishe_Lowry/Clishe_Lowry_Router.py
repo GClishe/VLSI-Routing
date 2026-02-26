@@ -6,7 +6,7 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-from Rtest.Rtest_100_100 import data
+from Rtest.Rtest_500_5000 import data
 #from Reval.Reval_1000_20000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
@@ -767,6 +767,7 @@ BEGIN MAIN
 ========================================================================================
 """
 
+start_time = time.perf_counter()
 
 netlist = deepcopy(data)
 
@@ -892,6 +893,8 @@ while work_q and pops < max_total_pops:
     routing_db.commit_route(net_name, detailed_route)
     routed_set.add(net_name)
 
+end_time = time.perf_counter()
+
 total_nets = len(routing_order)
 success_routes = len(routed_set)
 failed_routes = total_nets - success_routes
@@ -902,3 +905,5 @@ print(f"Routing summary: {success_routes}/{total_nets} nets routed "
 
 completed_routes = add_m1_vias_to_all_routes(routing_db, netlist)
 print(f"Total cost for this netlist is {total_routing_cost_from_routes(completed_routes)}")
+
+print(f"Time elapsed: {end_time - start_time} seconds.")
