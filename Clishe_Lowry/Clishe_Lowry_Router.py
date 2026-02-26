@@ -822,10 +822,10 @@ PULSE_S = 10.0
 while work_q and pops < max_total_pops:
 
     now = time.perf_counter()
-    if now - last_heartbeat > PULSE_S:
+    if now - last_pulse > PULSE_S:
         print(f"[{now-t0}s] routed={len(routed_set)}/{total_nets} "
             f"queue={len(work_q)} pops={pops} current={net_name}")
-        last_heartbeat = now
+        last_pulse = now
 
     net_name = work_q.popleft()             # grabbing the leftmost net from the queue
     in_queue.remove(net_name)               # removing that net from the lookup set
