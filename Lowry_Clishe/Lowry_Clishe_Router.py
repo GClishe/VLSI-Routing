@@ -88,7 +88,10 @@ def addHori (net: int, xStart:int, xEnd:int, y:int, z:int):     #Adds a horizont
     seg = len(segList[net])-1
     segList[net].insert(seg, [[xStart, y, z], [xEnd, y, z], 1])  #Put new segment before end
     global layoutGrid
-    for x in range(xStart, xEnd + 1):   #Fill in cells
+    stepIteration = 1
+    if  xStart > xEnd:
+        stepIteration = -1
+    for x in range(xStart, xEnd + stepIteration, stepIteration):   #Fill in cells
         layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
     layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
     layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
@@ -102,12 +105,14 @@ def addVert (net: int, x:int, yStart: int, yEnd:int, z:int):     #Adds a horizon
     seg = len(segList[net])-1
     segList[net].insert(seg, [[x, yStart, z], [x, yEnd, z], 2])  #Put new segment before end
     global layoutGrid
-    for y in range(yStart, yEnd + 1):   #Fill in cells
+    stepIteration = 1
+    if  yStart > yEnd:
+        stepIteration = -1
+    for y in range(yStart, yEnd + stepIteration, stepIteration):   #Fill in cells
         layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
     layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
     layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
     if (x, yEnd, z) == (netList[net][2], netList[net][3], 1):       #If this segment and the end via overlap
-
         cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
         layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
         netList[net][6] = cost                                      #Use this cost to update netList
@@ -142,9 +147,12 @@ def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
             if layoutGrid[x][int(step)][z][0] not in {-1, net}:
                 return False
     return True
+
 #def costCellToLastSeg 
 #Trace the currently tracing variables back to the last segment in the net
 #Need to clear the currently tracing net variable for all cells at the end of each search
+
+
 
 #Start routing
 startTime = time.perf_counter()     #Start timer
@@ -353,7 +361,7 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                             addVia(i, x1, y0, 3, 2)
                             addVia(i, x1, y0, 2, 1)
                             addVert(i, x1, y0, y1, 1)
-                        elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x0, y1, 4, 3, 0) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, 1, 0): #Check vertical segment at start on M2, and vias at intersection from M2 to M3, and M3 to M4, and M4 to M5, and horizontal segment from intersection to end on M5, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
+                        elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check vertical segment at start on M2, and vias at intersection from M2 to M3, and M3 to M4, and M4 to M5, and horizontal segment from intersection to end on M5, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
                             print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M5')
                             addVert(i, x0, y0, y1, 1)
                             addVia(i, x0, y1, 1, 2)
@@ -467,8 +475,7 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 5, 4)
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1) 
-                                
+                                addVia(i, x1, y1, 2, 1)  
                             elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2):
                                 print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M2')
                                 addVia(i, x0, y0, 1, 2)
@@ -737,7 +744,6 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-#Add lower M9 combos
                             else: LFail = LFail + 1
                         else: LFail = LFail + 1
 #Can optimize L's by tracking previously checked segments
@@ -750,6 +756,20 @@ if maxPatternSize != 0:     #Skip pattern routing is max size is 0
         elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the mad pattern size
             break   #End pattern routing   
         patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
+"""
+for i in range(NET_COUNT):
+    if netList[i][6] == 0:  #If a net failed to route
+        for j in range(2, NUM_LAYERS):  #Scan all the layers above the start/end vias
+            if layoutGrid[netList[i][0]][netList[i][1]][j][0] != -1:    #If there's something there
+                conflictNet = layoutGrid[netList[i][0]][netList[i][1]][j][0]
+                for k in range(len(segList[conflictNet])):
+                    if segList[conflictNet][k][2] == 0:
+                        for l in range()
+                    elif segList[conflictNet][k][2] == 1:
+
+                    if segList[conflictNet][k][2] == 2:
+"""
+
 
 
 
@@ -779,6 +799,7 @@ print(f'vertAttempt = {vertAttempt}, vertFail = {vertFail}, horiAttempt = {horiA
 print(f'Routed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds')  #Print % of nets that were routed and how long it took
 
 #Check results for validity
+print(f'Validating results...')
 cost = 0
 for i in range(NET_COUNT):
     netCost = 0
@@ -808,20 +829,41 @@ for i in range(NET_COUNT):
                 print(f'Error: The end of Net {i}, Segment {j} does not match the start of Segment {j + 1}')
     cost = netCost + cost
     if netList[i][6] != 0:
-        pos = [netList[i][0], netList[i][1], 0]
-        while (pos != [netList[i][0], netList[i][1], 0]):
-            if layoutGrid[pos[0] + 1][pos[1]][pos[2]][0] == i:
-                pos[0] = pos[0] + 1
-            elif layoutGrid[pos[0] - 1][pos[1]][pos[2]][0] == i:
-                pos[0] = pos[0] - 1
-            elif layoutGrid[pos[0]][pos[1] + 1][pos[2]][0] == i:
-                pos[1] = pos[1] + 1
-            elif layoutGrid[pos[0]][pos[1] - 1][pos[2]][0] == i:
-                pos[1] = pos[1] - 1
-            elif layoutGrid[pos[0]][pos[1]][pos[2] + 1][0] == i:
-                pos[2] = pos[2] + 1
-            elif layoutGrid[pos[0]][pos[1]][pos[2] - 1][0] == i:
-                pos[2] = pos[2] - 1
+        posx = netList[i][0]
+        posy = netList[i][1]
+        posz = 0
+        lastMove = 0
+        while (posx != netList[i][2] or posy != netList[i][3] or posz != 0):
+            if segList[i][layoutGrid[posx][posy][posz][1]][2] == 0:
+                if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == i and lastMove != 6:
+                    posz = posz + 1
+                    lastMove = 5
+                elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == i and lastMove != 5:
+                    posz = posz - 1
+                    lastMove = 6
+                else:
+                    print(f'Error: Unable to trace Net {i}')
+                    break
+            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 1:
+                if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == i and lastMove != 2:
+                    posx = posx + 1
+                    lastMove = 1
+                elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == i and lastMove != 1:
+                    posx = posx - 1
+                    lastMove = 2
+                else:
+                    print(f'Error: Unable to trace Net {i}')
+                    break
+            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 2:    
+                if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == i and lastMove != 4:
+                    posy = posy + 1
+                    lastMove = 3
+                elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == i and lastMove != 3:
+                    posy = posy - 1
+                    lastMove = 4
+                else:
+                    print(f'Error: Unable to trace Net {i}')
+                    break
             else:
                 print(f'Error: Unable to trace Net {i}')
                 break
