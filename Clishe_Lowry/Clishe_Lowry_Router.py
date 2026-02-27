@@ -115,10 +115,18 @@ class RoutingDB:
         self.tile_cong = [[0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)] # 2D array tracking tile congestion. tile_cong[tx][ty] reports how many committed nets pass through the tile (tx,ty)
         self.tile_hist = [[0.0 for _ in range(self.num_tiles)] for _ in range(self.num_tiles)]  # creates tile history term
 
+        # precompute capacity of a tile (detailed cells) for faster congestion penalty calculation
+        self.tile_capacity = self.tile_size * self.tile_size * self.num_layers
+
         self.net_routes = {}                                                                 # dict that contains net_name -> list of bitarray indices for cells on that net
               
     def coordinate_to_idx(self, x: int, y: int, layer: int) -> int:
-        """ Convert (x,y,layer) to 1D occupancy array index """
+        """
+        Convert (x,y,layer) to 1D occupancy array index.
+        Index ordering in this way allows us to store each layer sequentially in row-major order, 
+        meaning that coordinates that differ in y only will be adjacent in the occupancy array and 
+        coordinates that differ in x only will be separated by grid_size in the occupancy array.
+        """
         return (layer * self.grid_size + x) * self.grid_size + y 
     
     def idx_to_coordinate(self, idx: int) -> tuple[int, int, int]:
@@ -191,8 +199,7 @@ class RoutingDB:
         ty = y // self.tile_size
 
         d = self.tile_cong[tx][ty]      # grabs the congestion value for tile (tx,ty) (number of committed cells in that tile)
-        cap = self.tile_size * self.tile_size * self.num_layers         # creates a capacity value; determines how many cells can exist in (tx,ty)
-        util = d / cap                                       # defines utilization of the tile by normalizing the congestion value with the capacity of the tile
+        util = d / self.tile_capacity                        # use precomputed capacity for utilization
 
         # congestion penalty is exponential; penalty = alpha * util^p. at low util, congestion penalty is near zero, grows faster as util rises
         # these values should be tuned
@@ -400,95 +407,69 @@ def A_star_global(
         start_tile = routing_db.get_tile(sx, sy, sl)  
         goal_tile  = routing_db.get_tile(gx, gy, gl)
 
-    num_tiles = routing_db.num_tiles    # this is number of tiles to a size on the global tile grid. A square grid (which we have) has num_tiles^2 total tiles. 
+    num_tiles = routing_db.num_tiles    # number of tiles per side
+    gw = params.global_cong_weight      # gw is the global congestion weight, which is used to compute the cost of stepping into a tile based on its congestion
+    tp = params.global_turn_penalty 
+    tcong = routing_db.tile_cong
 
-    def tile_in_bounds(tile):
-        """ Decides if a tile is in-bounds"""
-        tx, ty = tile
-        return (0 <= tx < num_tiles) and (0 <= ty < num_tiles)
-    
-    def h(current, goal):
-        """
-        Currently using manhattan distance as the heuristic. This heuristic is consistent. Our step cost is 1 + nonnegative 
-        congestion + nonnegative turn penalty, so the cost for each step is always at least one. Since Manhattan distance 
-        decreases by at most 1 per step, we have h(n,goal) <= c(n,n') + h(n',goal) for all neighbors n' of n, which is 
-        the condition that must be met for a consistent heuristic.
-        """
-        return dist(current, goal)
+    def h(c):
+        # Manhattan distance heuristic for A* global routing
+        return abs(c[0]-goal_tile[0]) + abs(c[1]-goal_tile[1])
 
-    def reconstruct_path(came_from, current):
-        """
-        Traces back the path from current_node back to the start of move_list. Successive indices in the output list indicate successive nodes in the path. 
-        """
-        path = [current]                            # start at the goal node (this function is only called when current == goal)
-        while came_from[current] is not None:       # came_from is the list of key: value pairs where in order to get to key, we traversed through value. came_from[start] == None
-            current = came_from[current]            # moving down the list toward the start
-            path.append(current)                    
-        path.reverse()                              # reverse the list to get a start --> goal path instead of a goal --> start path. 
+    def reconstruct(came, cur):
+        path = [cur]
+        while came[cur] is not None:
+            cur = came[cur]
+            path.append(cur)
+        path.reverse()
         return path
 
-    def find_neighbors(current_cell):
+    def neighbors(cur):
         """
-        Returns the in-bounds tiles that are neighbors of current_cell. This is much simpler for global routing because only one layer need be considered.
+        Generate neighboring tiles (up, down, left, right) with boundary checks.
+
+        When this function is called, a generator object is created that can be iterated over to yield neighboring tiles one at a time. This is more efficient than generating all neighbors at once and storing them in a list, especially if the number of neighbors is large or if this function is called frequently within A*.
         """
-        tx, ty = current_cell
-        candidates = [(tx + 1, ty), (tx - 1, ty), (tx, ty + 1), (tx, ty - 1)]   # list of candidate tiles
-        return [tile for tile in candidates if tile_in_bounds(tile)]            # returns the candidates that are in-bounds
+        tx, ty = cur
+        if tx + 1 < num_tiles: yield (tx+1, ty)
+        if tx - 1 >= 0: yield (tx-1, ty)
+        if ty + 1 < num_tiles: yield (tx, ty+1)
+        if ty - 1 >= 0: yield (tx, ty-1)
 
-    def step_cost(current, neighbor, prev_dir):
-        """
-        Returns the cost to step frmo current tile to the neighbor tile and the direction of that move.
-        Cost starts at 1 for a tile step. Adds congestion_weight*tile_cong[neighbor] and 
-        also a turn penalty if direction changes relative to prev_dir.
-
-        """
-        x, y   = current
-        nx, ny = neighbor
-        cost = 1.0                                                  # base cost for stepping one tile
-        cost += params.global_cong_weight * routing_db.tile_cong[nx][ny]    # added cost for entering congested tile
-
-        move_dir = (nx - x, ny - y)                                 # move direction determined by a tuple. (-1, 0) means a leftward move, (0,1) means an upward move, etc.
-        if (prev_dir != (0,0)) and (move_dir != prev_dir):          # move direction is compared against the previous move's direction. If they are not alike, then a bend has occurred. (0,0) included for start tile. 
-            cost += params.global_turn_penalty
-
+    def dir_cost(cur, neigbhor, prev_dir):
+        # compute cost and new direction
+        tx, ty = cur
+        nx, ny = neigbhor
+        cost = 1.0 + gw * tcong[nx][ny]                     # base cost of 1 plus congestion penalty
+        move_dir = (nx-tx, ny-ty)                           # direction of the move from cur to neigbhor
+        if prev_dir != (0,0) and move_dir != prev_dir:      # if we are changing direction (and this is not the first move), add a turn penalty
+            cost += tp
         return cost, move_dir
 
-    g = {start_tile: 0.0}                                            # initializing the g dictionary. Each cell other than the start will be initialized to infinity 
-
+    g = {start_tile: 0.0}
     open_set = []
-    heapq.heappush(open_set, (h(start_tile, goal_tile), start_tile)) # pushing the tuple (f_start,start) to the heap open_set. the first element of each tuple determines the order in which elements are popped. 
-
-    # Initialize an unordered set of nodes already expanded (popped and processed). With a consistent heuristic, once a node is expanded its best g is final, so we never expand it again. This is needed if we allow duplicates in open_set (we do)
-    closed = set()                  
-
-    came_from = {start_tile: None}       # initializes the came_from dict that allows us to retrace steps. key: value tells us that to get to key, we came from value. 
-    dir_from = {start_tile: (0,0)}       # initializes dir_frmo dict that stores the direction used to arrive at each tile. See step_cost for how the tuple corresponds to direction
+    heapq.heappush(open_set, (h(start_tile), start_tile))
+    closed = set()
+    came_from = {start_tile: None}
+    dir_from = {start_tile: (0,0)}
 
     while open_set:
-        current = heapq.heappop(open_set)[1]        # popping the (f,tile_coord) tuple from the top of the heap. Discarding the f value used for heap ordering. 
-
-        # skipping stale heap entries; with duplicates allowed, we need to skip cells that have already been expanded. We never need to re-expand as long as we have a consistent heuristic (its g value is already optimal)
-        if current in closed:
+        current = heapq.heappop(open_set)[1]                    # pops the tile with the lowest f score (g + h) from the open set and assigns it to current
+        if current in closed:                                   # if we have already visited this tile, skip it
             continue
+        if current == goal_tile:                                
+            return reconstruct(came_from, current)
+        closed.add(current)                                     # mark current tile as visited by adding it to the closed set  
 
-        # if current is the goal, then we are done. Reconstruct the path. 
-        if current == goal_tile:
-            return reconstruct_path(came_from, current)
-        
-        closed.add(current)     # by popping current from open_set, we are visiting the node. So we add it to closed.
-
-        for neighbor in find_neighbors(current):
-            prev_dir = dir_from[current]                                    # keeping track of the direction from which we arrived at current for detecting direction changes
-            move_cost, move_dir = step_cost(current, neighbor, prev_dir)    # identifying cost and direction for stepping into neighbor from current      
-            tentative_g = g[current] + move_cost                            # g value for stepping into the neighbor is the g to reach current plus the cost associated with the step into neighbor
-
-            if tentative_g < g.get(neighbor, math.inf):                     # this is where the "each cell other than the start is initialized to infinity" comes into play. if neighbor does not yet exist in the g dict, then we use infinity as a placeholder.
-                came_from[neighbor] = current                              
-                dir_from[neighbor] = move_dir                               # direction to arrive at neighbor stored in dir_from
-                g[neighbor] = tentative_g                                   
-
-                f_neighbor = tentative_g + h(neighbor, goal_tile)           # total f value for the cell is used for ordering in the heap
-                heapq.heappush(open_set, (f_neighbor, neighbor))            # pushing the neighbor into the frontier. Duplicates will occur, but old values of neighbor that are already in open_set with larger f[neighbor] values will never be visited due to the "if current in closed" check at the start of the loop
+        curdir = dir_from[current]                              # direction we took to get to current tile for turn penalty calculation
+        for neigbhor in neighbors(current):
+            cost, ndir = dir_cost(current, neigbhor, curdir)    # compute the cost to step into this neighbor and the direction of that step
+            tentative = g[current] + cost                       # tentative g score for this neighbor is the g score of current plus the cost to step into this neighbor
+            if tentative < g.get(neigbhor, math.inf):           # if this path to neighbor is better than any previously recorded path to neighbor, update our records for this neighbor
+                came_from[neigbhor] = current                   # record that the best path to neighbor comes from current tile
+                dir_from[neigbhor] = ndir                       # record the direction we took to get to neighbor for future turn penalty calculations
+                g[neigbhor] = tentative                         # update g score for neighbor
+                heapq.heappush(open_set, (tentative + h(neigbhor), neigbhor))  # add neighbor to open set with priority equal to its f score (g + h)
 
     print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
@@ -536,23 +517,11 @@ def build_allowed_tiles_from_bands(bands: list[set[tuple[int,int]]], band_limit:
 
 def A_star_detailed(start, goal, routing_db, global_route, params, band_limit) -> list[tuple[int,int,int]]:
     """
-    Uses A* search on the detailed routing grid to find a detailed route between start and goal.
-    Even layers (0, 2, 4, 6) allow only vertical moves;
-    Odd layers (1, 3, 5, 7) allow only horizontal moves;
-    Via moves between adjacent layers at the same (x,y) position. 
+    Detailed-grid A* search.  Same semantics as before but optimized for speed.
 
-    This function assumes routing_db layers correspond to M2 thru M9, where layer=0 means M2
-    and layer=7 means M9. Start/goal pins from the netlist are provided as (x,y) pairs, but they 
-    are treated as (x,y,0). 
-
-    Cost breakdown is as follows: 
-        wire steps have base cost of 1,
-        vias have cost of 2 for adjacent-layer transitions,
-        optional congestion penalty (routing_db.congestion_penalty),
-        penalty for leaving global route corridor (if global route is provided).
-
-    Returns path: list[(x,y,layer)] from start to goal inclusive, or None if unroutable
-        
+    We operate primarily on linear indices and cache frequently-used values locally
+    to avoid repeated attribute lookups and function calls.  Neighbor generation uses
+    simple arithmetic; coordinate conversions are inlined only when needed.
     """    
     # raise an error if coordinates are missing `layer`
     if len(start) != 3 or len(goal) != 3:
@@ -579,125 +548,190 @@ def A_star_detailed(start, goal, routing_db, global_route, params, band_limit) -
     band_cost = params.corridor_band_cost   # band_cost[n] is the cost associated with moving into a tile a distance of n away from the corridor. This penalizes routes that exit the global route. Increasing these values further punishes this behavior.
     max_band = len(band_cost) - 1           # the number of bands passed to build_corridor_bands depends on the num of elements in band_cost
     bands = None                            # initializes bands with None. Will stay None if global routing did not occur. 
-    allowed_tiles = None
-    if corridor_tiles is not None:
+    allowed_tiles = None                    # allowed_tiles is the set of tiles that are allowed to be entered according to the global route corridor
+
+    # if we have a global route, we want to build corridor bands and allowed tiles for the detailed router to use as guidance and penalty calculation
+    if corridor_tiles is not None:  
         bands = build_corridor_bands(corridor_tiles, routing_db.num_tiles, max_band=max_band)  
         allowed_tiles = build_allowed_tiles_from_bands(bands, band_limit)
 
+    # to improve performance, cache frequently used values in local variables
+    grid = routing_db.grid_size
+    layer_stride = grid * grid
+    max_layer = routing_db.num_layers - 1
+    tile_size = routing_db.tile_size
 
-    def corridor_penalty_for_tile(tx, ty):
-        """ Computes the penalty for stepping into the tile tx, ty"""
-        if bands is None:
+    # local copies of parameter values used in inner loops
+    cong_alpha = params.cong_alpha
+    cong_p = params.cong_p
+    hist_weight = params.hist_weight
+    via_cost = routing_db.params.via_cost
+    wire_cost = routing_db.params.wire_step_cost
+    corridor_threshold = params.corridor_util_thresh
+    band_cost = params.corridor_band_cost
+    max_band = len(band_cost) - 1
+
+    tile_cong = routing_db.tile_cong
+    tile_hist = routing_db.tile_hist
+
+    # fast inline helpers using local variables
+    def tile_penalty(tx, ty):
+        # expects tx,ty in-bounds
+        util = tile_cong[tx][ty] / routing_db.tile_capacity  # computes tile utilization
+        if util < corridor_threshold:                        # if tile is not congested above the corridor threshold, we dont apply any corridor penalty, even if we are outside of the global route
             return 0.0
         
-        cap = (routing_db.tile_size * routing_db.tile_size) * routing_db.num_layers     # defines the capacity of a tile as its area times depth (in terms of detailed cells)
-        util = routing_db.tile_cong[tx][ty] / cap                                       # computes utilization by dividing the congestion (number of committed cells in tile) by its capacity
+        # if tile is congested above the threshold, we apply a penalty based on how far this tile is from the global route corridor. Tiles within the corridor have no penalty, tiles in the first band have a small penalty, and so on.
+        for d in range(max_band+1):                          # find the band that (tx,ty) belongs to. Since bands[d] is a set, this check is O(1)
+            if (tx, ty) in bands[d]:
+                return band_cost[d]                          
+        return band_cost[max_band] + params.corridor_far_penalty
 
-        # exiting the global routing corridor will only be punished if the tile we want to step into is congested above the threshold.
-        if util < params.corridor_util_thresh:
-            return 0.0
+    def h(idx): 
+        # using the database index for the current node, we can easily compute its coordinate, and then compute manhattan distance to the goal 
+        layer = idx // layer_stride
+        rem = idx - layer * layer_stride
+        x = rem // grid
+        y = rem - x * grid
 
-        t = (tx, ty)
-        for d in range(max_band+1):         # goal is to find what band t belongs to
-            if t in bands[d]:               # recall that bands[d] is a set for fast searching
-                return band_cost[d]     
-        
-        return band_cost[max_band] + params.corridor_far_penalty    # constant penalty for all tiles beyond max_band. We should increase the additive penalty here if we want to further discourage further jumps
+        manh = abs(x - gx) + abs(y - gy)    
+        via_lb = abs(layer - gl)            # gives lower bound on the number of vias that are required to traverse to the goal pin.
+        return manh + 2.0 * via_lb
 
-    def h(node_idx):
-        """ Combines Manhattan distance with a lower-bound on via cost to traverse from current layer to the goal layer"""
-        x, y, layer = routing_db.idx_to_coordinate(node_idx)
-
-        manhattan_dist = abs(y-gy) + abs(x-gx)    # one part of the heuristic is the manhattan distance between the projections of current and goal coordinates on a 2D grid
-        via_to_goal_lb  = abs(layer - gl)         # lower bound for number of vias needed is the number of layers separating the two coordinates. 
-
-        # Additional vias will be required if dx and dy are nonzero AND glayer == layer. This is because we would need to switch layers to move in one of the directions to close the gap. However, I am unsure if we can add these extra vias to the lower bound without violating consistency. For that reason, I am going to only add lower bound for vias needed to traverse the layers between current and goal. 
-    
-        return manhattan_dist + 2.0*via_to_goal_lb
-    
-    def reconstruct_path(came_from, end_idx):
-        out_idx = [end_idx]     # initializing out_idx list
-        cur = end_idx
+    def reconstruct(idx):
+        path = [idx]
         while True:
-            prev = came_from.get(cur, -1)       # if cur doesnt exist in came_from, return -1
-            if prev == -1:                      # and then break
+            prev = came_from.get(idx, -1)
+            if prev == -1:
                 break
-            out_idx.append(prev)                # adding the cell that cur came from to the list
-            cur = prev                          # updating cur
-        out_idx.reverse()                       # reversing the list to go from start to end instead of end to start
-        return [routing_db.idx_to_coordinate(i) for i in out_idx]       # turning DB indices back into coordinates
-    
-    def cell_allowed(nx, ny, nl):
-        """Determines if a cell is allowed by peforming boundary checks, checking route occupancy array, and checking pin ocupancy array """
-        if not routing_db.in_bounds(nx, ny, nl):
-            return False
-        
-        idx = routing_db.coordinate_to_idx(nx, ny, nl)
+            path.append(prev)
+            idx = prev
+        path.reverse()
+        return [routing_db.idx_to_coordinate(i) for i in path]
 
-        # check occupancy array for non-pins
-        if routing_db.occ[idx]:
-            return False
-
-        # checking occupancy array for pins. If it is in the pin array, check if it is one of the current net's pins
-        if routing_db.pin_occ[idx] and idx not in [s_idx, g_idx]:
-            return False
-        
-        if allowed_tiles is not None:
-            tx, ty = routing_db.get_tile(nx, ny, nl)
-            if (tx, ty) not in allowed_tiles:
-                return False
-
-        return True
-
-    # Below is the main A_star loop. It is similar to the global routing A*, but this version works primarily with DB indices rather than coordinate values. 
+    # start the search
     g = {s_idx: 0.0}
     came_from = {s_idx: -1}
-
-    h_start = h(s_idx)
-    f_start = h_start
-    open_set = [(f_start, h_start, s_idx)]     # heap is slightly modified; h is used to break ties in f
-
+    open_set = [(h(s_idx), s_idx)]          # we no longer need to store h separately for tie-breaking
     closed = set()
-    
-    while open_set:
-        cur_idx = heapq.heappop(open_set)[2]    # extract only s_idx; indices 0 and 1 are used for heap ordering
 
+    while open_set:
+        cur_idx = heapq.heappop(open_set)[1]
         if cur_idx in closed:
             continue
-
         if cur_idx == g_idx:
-            return reconstruct_path(came_from, cur_idx)
-
+            return reconstruct(cur_idx)
         closed.add(cur_idx)
-        x, y, layer = routing_db.idx_to_coordinate(cur_idx)     # extracting the coordinate associated with cur_idx
 
-        # neighbor candidates are assigned here. Even layer neighbors include only via steps and vertical steps; odd layer neighbors include only via steps and horizontal steps
-        if layer % 2 == 0:
-            candidates = [(x, y + 1, layer), (x, y - 1, layer), (x, y, layer + 1), (x, y, layer - 1)]
-        else:
-            candidates = [(x + 1, y, layer), (x - 1, y, layer), (x, y, layer + 1), (x, y, layer - 1)]
+        # decode coordinates just once
+        layer = cur_idx // layer_stride         # layer of the current index
+        rem = cur_idx - layer * layer_stride     
+        x = rem // grid             # x coordinate of the current index 
+        y = rem - x * grid          # y coordinate of the current index
+        cur_g = g[cur_idx]          # g score of the current index (cost to reach this index from the start index along the best known path)
 
+        # generate neighbors with inline code for speed. We have 4 potential moves: vertical, horizontal, via up, via down. We check the validity of each move and compute the neighbor index and coordinates accordingly.
+        if layer % 2 == 0:  # vertical layer: neighbors are vertical moves + vias
+            if y + 1 < grid:
+                n_idx = cur_idx + 1         # database index for the neighbor we would reach if we move up (increasing y by 1) on the same layer
+                nx, ny, nl = x, y+1, layer
+            else:
+                n_idx = None                # y+1 is not allowed, so we set n_idx to None to indicate that this neighbor does not exist
         cur_g = g[cur_idx]
-        for nx, ny, nl in candidates:
-            if not cell_allowed(nx, ny, nl):
+
+        # generate and process the four potential moves (layer-respecting)
+        for move in range(4):
+            n_idx = None
+            
+            if move == 0:
+                # checking upward or rightward moves for being in-bounds and updating neighbor index and coordinates accordingly
+                if layer % 2 == 0:
+                    if y + 1 < grid:
+                        n_idx = cur_idx + 1
+                        nx, ny, nl = x, y+1, layer
+                    else:
+                        continue
+                else:
+                    if x + 1 < grid:
+                        n_idx = cur_idx + grid
+                        nx, ny, nl = x+1, y, layer
+                    else:
+                        continue
+            elif move == 1:
+                # checking downward or leftward moves for being in-bounds and updating neighbor index and coordinates accordingly
+                if layer % 2 == 0:
+                    if y - 1 >= 0:
+                        n_idx = cur_idx - 1
+                        nx, ny, nl = x, y-1, layer
+                    else:
+                        continue
+                else:
+                    if x - 1 >= 0:
+                        n_idx = cur_idx - grid
+                        nx, ny, nl = x-1, y, layer
+                    else:
+                        continue
+            elif move == 2:
+                # checking via up for being in-bounds and updating neighbor index and coordinates accordingly
+                if layer < max_layer:
+                    n_idx = cur_idx + layer_stride
+                    nx, ny, nl = x, y, layer+1
+                else:
+                    continue
+            elif move == 3:
+                # checking via down for being in-bounds and updating neighbor index and coordinates accordingly
+                if layer > 0:
+                    n_idx = cur_idx - layer_stride
+                    nx, ny, nl = x, y, layer-1
+                else:
+                    continue
+
+            # at this point n_idx, nx, ny, nl are guaranteed to be set
+            if n_idx is None:
                 continue
 
-            n_idx = routing_db.coordinate_to_idx(nx, ny, nl)
+            # in-bounds check (should always pass given the move generation above, but kept for safety)
+            if not (0 <= nx < grid and 0 <= ny < grid and 0 <= nl <= max_layer):
+                continue
 
-            base = routing_db.step_cost(x, y, layer, nx, ny, nl)            # base cost for stepping into nx, ny, nl. This includes H/V steps, via steps, and congestion penalties
+            # unoccupied check
+            if routing_db.occ[n_idx]:
+                continue
 
+            # pin occupancy check
+            if routing_db.pin_occ[n_idx] and n_idx not in (s_idx, g_idx):
+                continue
+
+            # global route corridor check if applicable
+            if allowed_tiles is not None:
+                tx = nx // tile_size
+                ty = ny // tile_size
+                if (tx, ty) not in allowed_tiles:
+                    continue
+            # if we reach this point, then the neighbor is valid and we can consider it for our A* search
+
+            # compute step cost inline for speed
+            cost = wire_cost
+            if layer != nl:
+                cost += via_cost * abs(nl - layer)
+    
+            # congestion penalty recomputed inline for speed
+            tx = nx // tile_size
+            ty = ny // tile_size
+            d = tile_cong[tx][ty]
+            util = d / routing_db.tile_capacity
+            cost += cong_alpha * (util ** cong_p) + hist_weight * tile_hist[tx][ty] # congestion penalty based on current congestion and tile history
+
+            # corridor penalty if needed
             if corridor_tiles is not None:
-                tx, ty = routing_db.get_tile(nx, ny, nl)                    # corridor tiles is none if global routing did not take place.
-                base += corridor_penalty_for_tile(tx, ty)                   # adding corridor penalty to the cost if global routing did occure
-            
+                cost += tile_penalty(tx, ty)
 
-            tentative_g = cur_g + base                                       # same as in global routing, but without direction checking
-            if tentative_g < g.get(n_idx, math.inf):
-                g[n_idx] = tentative_g
+            # below is the same as in global A*
+            tentative = cur_g + cost
+            if tentative < g.get(n_idx, math.inf):
+                g[n_idx] = tentative
                 came_from[n_idx] = cur_idx
-                hn = h(n_idx)
-                fn = tentative_g + hn
-                heapq.heappush(open_set, (fn, hn, n_idx))
+                heapq.heappush(open_set, (tentative + h(n_idx), n_idx))
 
     print(f"Detailed A*: no path found between {start} and {goal}.")
     return None
@@ -1054,8 +1088,7 @@ def run_routing(netlist, params, initial_order=None):
         for attempt in range(local_params.max_reroute_attempts):
             # tracking how much time we have spent on this net across all attempts, and if it exceeds the max_time_per_net parameter, we mark it as a trouble net (and permanently fail it) and break out of the loop to avoid wasting more time on it.
             if time.perf_counter() - net_start_time > local_params.max_time_per_net:
-                print(f"Net {net_name} exceeded time limit ({local_params.max_time_per_net}s); \
-                      marking as trouble and giving up on further attempts.")
+                print(f"Net {net_name} exceeded time limit ({local_params.max_time_per_net}s). Marking as trouble and giving up on further attempts.")
                 trouble_nets.add(net_name)
                 permanent_fail.add(net_name)
                 break
