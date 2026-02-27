@@ -6,8 +6,8 @@ from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass, field
 
-from Rtest.Rtest_500_6000 import data
-#from Reval.Reval_1000_30000 import data
+#from Rtest.Rtest_500_6000 import data
+from Reval.Reval_1000_30000 import data
 
 #pasting an example netlist for testing purposes. Will delete later. 
 #data = {   'grid_size': 100,
@@ -63,6 +63,9 @@ class RouterParams:
     # per-net routing time limit (seconds). If a single net takes longer than this amount across all
     # reroute attempts, it will be marked as a trouble net and treated specially to avoid hanging.
     max_time_per_net: float = 60.0
+
+    # total allowed time (seconds) for all routing sweeps combined. Once elapsed, routing halts.
+    total_allowed_time: float = 600.0
 
     hist_weight: float = 2.0         # multiplier on history term in congestion penalty
     hist_inc: float = 1.0            # how much to increment history when tile is over threshold
@@ -471,7 +474,7 @@ def A_star_global(
                 g[neigbhor] = tentative                         # update g score for neighbor
                 heapq.heappush(open_set, (tentative + h(neigbhor), neigbhor))  # add neighbor to open set with priority equal to its f score (g + h)
 
-    print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
+    #print(f"A* terminated with no path found between {start_tile} and {goal_tile}.")
     return None
 
 def build_corridor_bands(corridor_tiles, num_tiles, max_band=3):
@@ -733,7 +736,7 @@ def A_star_detailed(start, goal, routing_db, global_route, params, band_limit) -
                 came_from[n_idx] = cur_idx
                 heapq.heappush(open_set, (tentative + h(n_idx), n_idx))
 
-    print(f"Detailed A*: no path found between {start} and {goal}.")
+    #print(f"Detailed A*: no path found between {start} and {goal}.")
     return None
 
 def total_routing_cost_from_routes(routes: dict[str,list[tuple[int,int,int]]]):
@@ -1003,7 +1006,6 @@ def try_l_route_with_layer_fallback(start, goal, routing_db, num_layers):
     
     return None
 
-
 def run_routing(netlist, params, initial_order=None):
     """Perform a single routing pass using the existing loop logic.
 
@@ -1146,17 +1148,10 @@ def run_routing(netlist, params, initial_order=None):
             routing_db.update_history_penalties() 
             local_params.cong_alpha *= local_params.bump_cong_alpha_on_retry    # bumping up the congestion alpha to make congestion penalties more severe on each retry, which should encourage the search to find less congested paths on subsequent attempts
 
-        # if we exit the attempt loop without finding a detailed route, then we check if the net should be requeued for another attempt or marked as a permanent fail. We only requeue it if it has not exceeded the max_requeue_per_net limit and if it is not already in the queue or marked as a permanent fail. Otherwise, we mark it as a permanent fail to avoid wasting time on it in the future
+        # if we exit the attempt loop without finding a detailed route, mark as permanent fail and skip requeue
         if detailed_route is None:
-            if net_name in trouble_nets:
-                continue
-            cnt = reroute_count.get(net_name, 0) + 1
-            reroute_count[net_name] = cnt
-            if cnt <= local_params.max_requeue_per_net:
-                if net_name not in in_queue:
-                    work_q.append(net_name)
-                    in_queue.add(net_name)
-            else:
+            if net_name not in trouble_nets:  # trouble nets are already marked in permanent_fail
+                print(f"{net_name} has failed to route after {local_params.max_reroute_attempts} attempts. Marking as a permanent fail.")
                 permanent_fail.add(net_name)
             continue
 
@@ -1173,6 +1168,109 @@ def run_routing(netlist, params, initial_order=None):
         print(f"Trouble nets (timed out): {trouble_nets}")
 
     return routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, elapsed
+
+def run_multi_sweep_routing(netlist, params):
+    """
+    Execute multi-sweep routing strategy with time budget and progressive escalation with the following strategy:
+    Sweep 1: Quick pass (low max_reroute_attempts) to identify easy/difficult nets
+    Sweep 2+: Escalating passes with:
+      * Trouble nets prioritized in routing order
+      * Progressively higher max_reroute_attempts
+      * Progressively higher congestion penalties
+      * Continue until all nets routed or time budget exhausted
+    
+    Returns: (routing_db, routed_set, routed_order, permanent_fail, all_trouble_nets, total_pops, total_elapsed)
+    """
+    start_time = time.perf_counter()
+    total_elapsed = 0.0
+    all_trouble_nets = set()
+    total_pops = 0
+    current_routing_db = None
+    current_routed_set = set()
+    current_routed_order = []
+    current_permanent_fail = set()
+    
+    # tracks how many attempts each route has needed
+    net_attempt_count = {}
+    
+    # sweep parameters that escalate over time. We start with a quick sweep that has low max_reroute_attempts, low ripup_k to identify which nets are easy and which are hard, and short time budget per net. Then we progressively increase max_reroute_attempts, ripup_k, and time_budget_per_net to give more chances and more aggressive ripup to the hard nets, while still giving some chances to the easy nets. The tags are just for logging purposes.
+    sweep_configs = [
+        {'max_reroute_attempts': 2, 'ripup_k': 5, 'time_budget_per_net': 30, 'tag': 'Quick pass'},
+        {'max_reroute_attempts': 4, 'ripup_k': 8, 'time_budget_per_net': 60, 'tag': 'Second pass'},
+        {'max_reroute_attempts': 8, 'ripup_k': 12, 'time_budget_per_net': 120, 'tag': 'Third pass'},
+        {'max_reroute_attempts': 16, 'ripup_k': 15, 'time_budget_per_net': math.inf, 'tag': 'Final escalation'},
+    ]
+    
+    # we run multiple sweeps, each time passing the current routing state and escalating parameters. We check the time budget and routing completion status before each sweep to decide whether to continue.
+    for sweep_num, sweep_config in enumerate(sweep_configs, start=1):
+        # check time budget before starting sweep
+        elapsed_so_far = time.perf_counter() - start_time
+        if elapsed_so_far >= params.total_allowed_time:
+            print(f"Time budget exhausted ({elapsed_so_far}s >= {params.total_allowed_time}s). Halting sweeps.")
+            break
+        
+        # check if we have routed everything
+        all_nets = set(netlist["nets"].keys())
+        if current_routed_set == all_nets:
+            print(f"All nets routed. Halting sweeps.")
+            break
+        
+        # identify nets that need rerouting (any net not yet successfully routed, including those that failed in previous sweeps)
+        # we want to re-attempt failed nets with more aggressive parameters in subsequent sweeps
+        unrouted_nets = all_nets - current_routed_set
+        
+        if not unrouted_nets:
+            print(f"All nets routed successfully. Halting sweeps.")
+            break
+        
+        print(f"\n--- Sweep {sweep_num} ({sweep_config['tag']}) ---")
+        print(f"Nets to route: {len(unrouted_nets)}")
+        
+        # create initial order prioritizing multi-attempt nets (nets that struggled in previous sweeps)
+        # multi-attempt nets appear first in the priority order to get more routing resources in this sweep
+        multi_attempt_nets = [n for n in netlist["nets"].keys() 
+                              if net_attempt_count.get(n, 0) > 0 and n not in current_routed_set]
+        single_attempt_nets = [n for n in unrouted_nets if n not in multi_attempt_nets]
+        sweep_order = multi_attempt_nets + single_attempt_nets
+        
+        # create params for this sweep, updating max_reroute_attempts and ripup_k and time budget per net
+        sweep_params = RouterParams(**vars(params))
+        sweep_params.max_reroute_attempts = sweep_config['max_reroute_attempts']
+        sweep_params.ripup_k = sweep_config['ripup_k']
+        sweep_params.max_time_per_net = sweep_config['time_budget_per_net']
+        
+        # run this sweep, passing the current routing state via initial_order so nets can be preloaded
+        sweep_result = run_routing(netlist, sweep_params, initial_order=sweep_order)
+        routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, sweep_elapsed = sweep_result
+        
+        # update cumulative state
+        total_elapsed += sweep_elapsed
+        total_pops += pops
+        current_routing_db = routing_db
+        current_permanent_fail.update(permanent_fail)
+        all_trouble_nets.update(trouble_nets)
+        
+        # track which nets succeeded in this sweep and update attempt counts
+        newly_routed = routed_set - current_routed_set
+        for net_name in newly_routed:
+            net_attempt_count[net_name] = sweep_num
+        
+        current_routed_set = routed_set
+        current_routed_order = routed_order
+        
+        print(f"Sweep {sweep_num} result: {len(routed_set)}/{len(all_nets)} nets routed. "
+              f"Newly routed this sweep: {len(newly_routed)}. Time: {sweep_elapsed}s")
+        
+        # early exit if no progress made. Beacuse there is already an exit for taking too much time, i will leave this uncommented. But might come back to it later. 
+        # if len(newly_routed) == 0 and sweep_num > 1:
+        #     print(f"No progress in sweep {sweep_num}. Halting further sweeps.")
+        #     break
+    
+    print(f"\nMulti-sweep routing complete: {len(current_routed_set)}/{len(netlist['nets'])} nets routed.")
+    print(f"Total time: {total_elapsed}s. Trouble nets: {len(all_trouble_nets)}")
+    
+    return current_routing_db, current_routed_set, current_routed_order, current_permanent_fail, all_trouble_nets, total_pops, total_elapsed
+
 
 """
 
@@ -1204,28 +1302,15 @@ params = RouterParams(
     max_requeue_per_net=20,
 
     max_time_per_net=60.0,
+    total_allowed_time=3600.0,
 
     hist_weight=2.0,
     hist_inc=1.0,
     hist_util_thresh=0.10,
 )
 
-# attempt routing once with the default order, and then if we see trouble nets and we finished reasonably quickly, we try rerouting just the trouble nets with a different order to see if we can get more of them routed successfully
-routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, elapsed = run_routing(netlist, params)
-
-# if we finished reasonably quickly and saw trouble nets, try rerouting them first
-# we check if the total elapsed time is less than twice the maximum time we would expect to spend on the trouble nets if we routed them sequentially with no interference. If we have already spent more time than that, then it is unlikely that rerouting just the trouble nets will finish in a reasonable time frame, so we skip the second pass to avoid wasting more time.
-if trouble_nets and elapsed < len(trouble_nets) * params.max_time_per_net * 2:  
-    print("\nRe-running routing with trouble nets prioritized...")
-    second_db, second_routed_set, second_order, second_fail, second_trouble, second_pops, second_elapsed = run_routing(netlist, params, initial_order=list(trouble_nets))
-    if len(second_routed_set) > len(routed_set):
-        routing_db = second_db
-        routed_set = second_routed_set
-        permanent_fail = second_fail
-        print("Second pass achieved more successful routes, adopting its result.")
-    else:
-        print("Second pass did not improve number of routed nets; keeping original solution.")
-    elapsed += second_elapsed  # accumulate total time
+# Execute multi-sweep routing strategy with time budget and progressive escalation of parameters
+routing_db, routed_set, routed_order, permanent_fail, trouble_nets, pops, elapsed = run_multi_sweep_routing(netlist, params)
 
 success_routes = len(routed_set)
 total_nets = len(netlist["nets"])
