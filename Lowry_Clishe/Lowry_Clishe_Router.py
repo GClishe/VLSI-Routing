@@ -7,7 +7,7 @@
 DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
 MASTER_SEED = 123456789                 #Set seed to make RND reproducable.
 NUM_LAYERS = 9                          #Set the number of layers available
-maxPatternSize = -1                     #Set the maximum length pattern routing should be used for. Set to 0 to disable pattern routing step, and -1 for auto
+MAX_PATTERN_SIZE = -1                   #Set the maximum length pattern routing should be used for. Set to 0 to disable pattern routing step, and -1 for auto
 ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
 SUBOPTIMAL_PATTERNS = True              #Allow patterns to extend past the first layer they are allowed to be on, as well as enabling detouring patterns like U and Z. If disabled, ADDITIONAL_PATTERN_LAYERS won't do anything
 GENERATE_GRAPHS = False                  #Enables generation of 3D graphs to show final route
@@ -158,620 +158,673 @@ def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
 startTime = time.perf_counter()     #Start timer
 for i in range(NET_COUNT):  #Fill the empty lists with first and last segment as well as a value to indicate type of segment
     segList[i] = [[[netList[i][0], netList[i][1], 0], [netList[i][0], netList[i][1], 1], 0], #First via from M1 to M2
-                  [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
+                [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
 for i in range(NET_COUNT):  #Manually add start and end vias for each net to layoutGrid
     layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 0, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 0, i, 0), i]
     layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 1, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 1, i, 0), i]
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 0, i), -1, i]
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
 
-#Attempt pattern routing
-if maxPatternSize != 0:     #Skip pattern routing is max size is 0
-    patternLength = 1       #Set initial max HPWL size to pattern route as 1
-    maxSizeTrack = 0        #Initialize temporary value for tracking largest HPWL
-    horiAttempt = 0
-    horiFail = 0
-    vertAttempt = 0
-    vertFail = 0
-    LAttempt = 0
-    LFail = 0
-    if maxPatternSize == -1:                    #If max pattern size is adaptive
-        for i in range(NET_COUNT):              #Iterate throught the nets
-            if maxPatternSize < netList[i][4]:  #And find the largest HPWL
-                maxPatternSize = netList[i][4]  #Update value
-    while(1):
-        nextSmallestLength = GRID_SIZE * 2      #Reset next smallest tracker
-        for i in range(NET_COUNT):              #For all nets
-            x0 = netList[i][0]                  #I added these to make it faster, it didn't, but it made it a lot easier to read so I kept it
-            y0 = netList[i][1]
-            x1= netList[i][2]
-            y1 = netList[i][3]
-            hpwl = netList[i][4]
-            if hpwl == patternLength:           #If the HPWL of this net is small enough
-                if x0 == x1:                    #If the start and end are on the same x
-                    vertAttempt = vertAttempt + 1
-                    if segOpen(i, x0, y0, 1, y1, 2):        #Check vertical line from start to end on M2
-                        print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M2')
-                        addVert(i, x0, y0, y1, 1) 
-                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0) and SUBOPTIMAL_PATTERNS: #If M2 vertical line fails, Check via from M2 to M3 and M3 to M4 at start and M4 to M3 and M3 to M2 at end
-                        if segOpen(i, x0, y0, 3, y1, 2):    #Check vertical line on M4
-                            print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M4')
-                            addVia(i, x0, y0, 1, 2)
-                            addVia(i, x0, y0, 2, 3)
-                            addVert(i, x0, y0, y1, 3) 
-                            addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1)         
-#If I come back to it, I should lock the optimal pattern routes
-#maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
-#Or try staggared routes
-                        elif ADDITIONAL_PATTERN_LAYERS:
-                            if segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0): #If M4 vertical line fails, Check via from M4 to M5 and M5 to M6 at start and M6 to M5 and M5 to M4 at end
-                                if segOpen(i, x0, y0, 5, y1, 2):  #Check vertical line on M6
-                                    print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M6')
+    
+def patternRouter():    #Attempt pattern routing
+    global layoutGrid
+    global netList
+    global segList
+    global horiAttempt
+    global horiFail
+    global vertAttempt
+    global vertFail
+    global LAttempt
+    global LFail
+    maxPatternSize = MAX_PATTERN_SIZE
+    if maxPatternSize != 0:     #Skip pattern routing is max size is 0
+        patternLength = 1       #Set initial max HPWL size to pattern route as 1
+        horiAttempt = 0
+        horiFail = 0
+        vertAttempt = 0
+        vertFail = 0
+        LAttempt = 0
+        LFail = 0
+        if maxPatternSize == -1:                    #If max pattern size is adaptive
+            for i in range(NET_COUNT):              #Iterate throught the nets
+                if maxPatternSize < netList[i][4]:  #And find the largest HPWL
+                    maxPatternSize = netList[i][4]  #Update value
+        while(1):
+            nextSmallestLength = GRID_SIZE * 2      #Reset next smallest tracker
+            for i in range(NET_COUNT):              #For all nets
+                if netList[i][6] == 0:
+                    hpwl = netList[i][4]
+                    if hpwl == patternLength:           #If the HPWL of this net is small enough
+                        x0 = netList[i][0]                  #I added these to make it faster, it didn't, but it made it a lot easier to read so I kept it
+                        y0 = netList[i][1]
+                        x1= netList[i][2]
+                        y1 = netList[i][3]
+                        if x0 == x1:                    #If the start and end are on the same x
+                            vertAttempt = vertAttempt + 1
+                            if segOpen(i, x0, y0, 1, y1, 2):        #Check vertical line from start to end on M2
+                                print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M2')
+                                addVert(i, x0, y0, y1, 1) 
+                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0) and SUBOPTIMAL_PATTERNS: #If M2 vertical line fails, Check via from M2 to M3 and M3 to M4 at start and M4 to M3 and M3 to M2 at end
+                                if segOpen(i, x0, y0, 3, y1, 2):    #Check vertical line on M4
+                                    print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M4')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addVia(i, x0, y0, 2, 3)
+                                    addVert(i, x0, y0, y1, 3) 
+                                    addVia(i, x1, y1, 3, 2)
+                                    addVia(i, x1, y1, 2, 1)         
+        #If I come back to it, I should lock the optimal pattern routes
+        #maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
+        #Or try staggared routes
+                                elif ADDITIONAL_PATTERN_LAYERS:
+                                    if segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0): #If M4 vertical line fails, Check via from M4 to M5 and M5 to M6 at start and M6 to M5 and M5 to M4 at end
+                                        if segOpen(i, x0, y0, 5, y1, 2):  #Check vertical line on M6
+                                            print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M6')
+                                            addVia(i, x0, y0, 1, 2)
+                                            addVia(i, x0, y0, 2, 3)
+                                            addVia(i, x0, y0, 3, 4)
+                                            addVia(i, x0, y0, 4, 5)
+                                            addVert(i, x0, y0, y1, 5) 
+                                            addVia(i, x1, y1, 5, 4)
+                                            addVia(i, x1, y1, 4, 3)
+                                            addVia(i, x1, y1, 3, 2)
+                                            addVia(i, x1, y1, 2, 1)
+                                        elif segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M8 vertical line fails, Check via from M6 to M7 and M7 to M8 at start and M8 to M7 and M7 to M6 at end
+                                            if segOpen(i, x0, y0, 7, y1, 2):  #Check vertical line on M6
+                                                print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M8')
+                                                addVia(i, x0, y0, 1, 2)
+                                                addVia(i, x0, y0, 2, 3)
+                                                addVia(i, x0, y0, 3, 4)
+                                                addVia(i, x0, y0, 4, 5)
+                                                addVia(i, x0, y0, 5, 6)
+                                                addVia(i, x0, y0, 6, 7)
+                                                addVert(i, x0, y0, y1, 7) 
+                                                addVia(i, x1, y1, 7, 6)
+                                                addVia(i, x1, y1, 6, 5)
+                                                addVia(i, x1, y1, 5, 4)
+                                                addVia(i, x1, y1, 4, 3)
+                                                addVia(i, x1, y1, 3, 2)
+                                                addVia(i, x1, y1, 2, 1)
+                                            else: vertFail = vertFail + 1    
+                                        else: vertFail = vertFail + 1        
+                                    else: vertFail = vertFail + 1            
+                                else: vertFail = vertFail + 1                
+                            else:vertFail = vertFail + 1
+                        elif y0 == y1:    #If the start and end are on the same y
+                            horiAttempt = horiAttempt + 1
+                            if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check via at start from M2 to M3 and via at end from M3 to M2
+                                if segOpen(i, x0, y0, 2, x1, 1):  #Try M3 horizontal line from start to end
+                                    print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M3')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addHori(i, x0, x1, y0, 2) 
+                                    addVia(i, x1, y1, 2, 1)
+                                elif segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and SUBOPTIMAL_PATTERNS: #If M3 horizontal line fails, Check vias at start from M3 to M4 and M4 to M5, and end from M5 to M4 and M4 to M3
+                                    if segOpen(i, x0, y0, 4, x1, 1):  #Check horizontal line from start to end on M5
+                                        print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M5')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addHori(i, x0, x1, y0, 4) 
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+        #maybe try X spaces to left/right U routes
+                                    elif ADDITIONAL_PATTERN_LAYERS:
+                                        if segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M5 horizontal line fails, Check vias at start from M5 to M6 and M6 to M7, and end from M7 to M6 and M6 to M5
+                                            if segOpen(i, x0, y0, 6, x1, 1):  #Check horizontal line from start to end on M7
+                                                print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M7')
+                                                addVia(i, x0, y0, 1, 2)
+                                                addVia(i, x0, y0, 2, 3)
+                                                addVia(i, x0, y0, 3, 4)
+                                                addVia(i, x0, y0, 4, 5)
+                                                addVia(i, x0, y0, 5, 6)
+                                                addHori(i, x0, x1, y0, 6) 
+                                                addVia(i, x1, y1, 6, 5)
+                                                addVia(i, x1, y1, 5, 4)
+                                                addVia(i, x1, y1, 4, 3)
+                                                addVia(i, x1, y1, 3, 2)
+                                                addVia(i, x1, y1, 2, 1)
+                                            elif segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x1, y1, 8, 7, 0): #If M7 horizontal line fails, Check vias at start from M7 to M8 and M8 to M9, and end from M9 to M8 and M8 to M3
+                                                if segOpen(i, x0, y0, 8, x1, 1):  #Check horizontal line from start to end on M9
+                                                    print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M9')
+                                                    addVia(i, x0, y0, 1, 2)
+                                                    addVia(i, x0, y0, 2, 3)
+                                                    addVia(i, x0, y0, 3, 4)
+                                                    addVia(i, x0, y0, 4, 5)
+                                                    addVia(i, x0, y0, 5, 6)
+                                                    addVia(i, x0, y0, 6, 7)
+                                                    addVia(i, x0, y0, 7, 8)
+                                                    addHori(i, x0, x1, y0, 8) 
+                                                    addVia(i, x1, y1, 8, 7)
+                                                    addVia(i, x1, y1, 7, 6)
+                                                    addVia(i, x1, y1, 6, 5)
+                                                    addVia(i, x1, y1, 5, 4)
+                                                    addVia(i, x1, y1, 4, 3)
+                                                    addVia(i, x1, y1, 3, 2)
+                                                    addVia(i, x1, y1, 2, 1)
+                                                else: horiFail = horiFail + 1
+                                            else: horiFail = horiFail + 1  
+                                        else: horiFail = horiFail + 1           
+                                    else:horiFail= horiFail + 1                  
+                                else:horiFail = horiFail + 1                    
+                            else:horiFail = horiFail + 1
+                        else:                                   #Start and End point don't share x or y axis
+                            LAttempt = LAttempt + 1
+                            if segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check the vertical path on M2 to intersection, and via from M2 to M3 at intersection, and via on end point from M3 to M2
+                                if segOpen(i, x0, y1, 2, x1, 1): #Check horizontal path from intersection to end on M3
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M3')
+                                    addVert(i, x0, y0, y1, 1)
+                                    addVia(i, x0, y1, 1, 2)
+                                    addHori(i, x0, x1, y1, 2)
+                                    addVia(i, x1, y1, 2, 1)
+                                else: LFail = LFail + 1
+                            elif segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x0, y0, 1, 2, 0):      #Check via at start from M2 to M3, and horizontal segment on M3 from start to intersection
+                                if segOpen(i, x1, y0, 1, y1, 2) and segOpen(i, x1, y0, 2, 1, 0):    #Check via at intersection from M3 to M2, and vertical segment on M2
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M2')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addHori(i, x0, x1, y0, 2)
+                                    addVia(i, x1, y0, 2, 1)
+                                    addVert(i, x1, y0, y1, 1)
+                                else: LFail = LFail + 1
+                            elif SUBOPTIMAL_PATTERNS:
+                                if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2) and segOpen(i, x1, y1, 2, 1): #Check via at start from M2 to M3, and horizontal segment on M3 from start to intersection, and via at intersection from M3 to M4, and M4 vertical segment, and via from M4 to M3, and via from M3 to M2
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M4')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addHori(i, x0, x1, y0, 2)
+                                    addVia(i, x1, y0, 2, 3)
+                                    addVert(i, x1, y0, y1, 3)
+                                    addVia(i, x1, y1, 3, 2)
+                                    addVia(i, x1, y1, 2, 1)
+                                elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0): #Check via at start from M2 to M3 and M3 to M4, and vertical segment on M4 from start to intersection, and via at intersection from M4 to M3, and horizontal segment on M3 from intersection to end, and via at end from M3 to M2
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M3')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addVia(i, x0, y0, 2, 3)
+                                    addVert(i, x0, y0, y1, 3)
+                                    addVia(i, x0, y1, 3, 2)
+                                    addHori(i, x0, x1, y1, 2)
+                                    addVia(i, x1, y1, 2, 1)
+                                elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, x1, 3, 2, 0): #Check via at start from M2 to M3, and via at start from M3 to M4, and via at Start from M4 to M5, and horizontal segment on M5 from start to intersection, and via at intersection from M5 to M4, and vertical segment on M4 from intersection to end, and vias at end from M4 to M3, and M3 to M2, 
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M4')
                                     addVia(i, x0, y0, 1, 2)
                                     addVia(i, x0, y0, 2, 3)
                                     addVia(i, x0, y0, 3, 4)
-                                    addVia(i, x0, y0, 4, 5)
-                                    addVert(i, x0, y0, y1, 5) 
-                                    addVia(i, x1, y1, 5, 4)
+                                    addHori(i, x0, x1, y0, 4)
+                                    addVia(i, x1, y0, 4, 3)
+                                    addVert(i, x1, y0, y1, 3) 
+                                    addVia(i, x1, y1, 3, 2)
+                                    addVia(i, x1, y1, 2, 1)
+                                elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check vias at start from M2 to M3, and M3 to M4, and vertical segment from start to intersection on M4, and via at intersection from M4 to M5, and horizontal segment on M5 from intersection to end, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M5')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addVia(i, x0, y0, 2, 3)
+                                    addVert(i, x0, y0, y1, 3)
+                                    addVia(i, x0, y1, 3, 4)
+                                    addHori(i, x0, x1, y1, 4)
                                     addVia(i, x1, y1, 4, 3)
                                     addVia(i, x1, y1, 3, 2)
                                     addVia(i, x1, y1, 2, 1)
-                                elif segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M8 vertical line fails, Check via from M6 to M7 and M7 to M8 at start and M8 to M7 and M7 to M6 at end
-                                    if segOpen(i, x0, y0, 7, y1, 2):  #Check vertical line on M6
-                                        print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M8')
+                                elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2): #Check via at start from M2 to M3, and via at start from M3 to M4, and via at Start from M4 to M5, and horizontal segment on M5 from start to intersection, and via at intersection from M5 to M4, and M4 to M3, and M3 to M2, and vertical segment on M2 from intersection to end
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M2')
+                                    addVia(i, x0, y0, 1, 2)
+                                    addVia(i, x0, y0, 2, 3)
+                                    addVia(i, x0, y0, 3, 4)
+                                    addHori(i, x0, x1, y0, 4)
+                                    addVia(i, x1, y0, 4, 3)
+                                    addVia(i, x1, y0, 3, 2)
+                                    addVia(i, x1, y0, 2, 1)
+                                    addVert(i, x1, y0, y1, 1)
+                                elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check vertical segment at start on M2, and vias at intersection from M2 to M3, and M3 to M4, and M4 to M5, and horizontal segment from intersection to end on M5, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
+                                    print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M5')
+                                    addVert(i, x0, y0, y1, 1)
+                                    addVia(i, x0, y1, 1, 2)
+                                    addVia(i, x0, y1, 2, 3)
+                                    addVia(i, x0, y1, 3, 4)
+                                    addHori(i, x0, x1, y1, 4)
+                                    addVia(i, x1, y1, 4, 3)
+                                    addVia(i, x1, y1, 3, 2)
+                                    addVia(i, x1, y1, 2, 1)
+                                elif ADDITIONAL_PATTERN_LAYERS:
+                                    if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M5')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVert(i, x0, y0, y1, 5)
+                                        addVia(i, x0, y1, 5, 4)
+                                        addHori(i, x0, x1, y1, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M6')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addHori(i, x0, x1, y0, 4)
+                                        addVia(i, x1, y0, 4, 5)
+                                        addVert(i, x1, y0, y1, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, 4, 0) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M6')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addHori(i, x0, x1, y0, 2)
+                                        addVia(i, x1, y0, 2, 3)
+                                        addVia(i, x1, y0, 3, 4)
+                                        addVia(i, x1, y0, 4, 5)
+                                        addVert(i, x1, y0, y1, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)   
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, 3, 0) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M3')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVert(i, x0, y0, y1, 5)
+                                        addVia(i, x0, y1, 5, 4)
+                                        addVia(i, x0, y1, 4, 3)
+                                        addVia(i, x0, y1, 3, 2)
+                                        addHori(i, x0, x1, y1, 2)
+                                        addVia(i, x1, y1, 2, 1) 
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M6')
                                         addVia(i, x0, y0, 1, 2)
                                         addVia(i, x0, y0, 2, 3)
                                         addVia(i, x0, y0, 3, 4)
                                         addVia(i, x0, y0, 4, 5)
                                         addVia(i, x0, y0, 5, 6)
-                                        addVia(i, x0, y0, 6, 7)
-                                        addVert(i, x0, y0, y1, 7) 
+                                        addHori(i, x0, x1, y0, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVert(i, x1, y0, y1, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M7')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVert(i, x0, y0, y1, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addHori(i, x0, x1, y1, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0)and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M4')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addHori(i, x0, x1, y0, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVia(i, x1, y0, 5, 4)
+                                        addVia(i, x1, y0, 4, 3)
+                                        addVert(i, x1, y0, y1, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M7')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVert(i, x0, y0, y1, 3)
+                                        addVia(i, x0, y1, 3, 4)
+                                        addVia(i, x0, y1, 4, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addHori(i, x0, x1, y1, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)  
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M2')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addHori(i, x0, x1, y0, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVia(i, x1, y0, 5, 4)
+                                        addVia(i, x1, y0, 4, 3)
+                                        addVia(i, x1, y0, 3, 2)
+                                        addVia(i, x1, y0, 2, 1)
+                                        addVert(i, x1, y0, y1, 1)
+                                    elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M7')
+                                        addVert(i, x0, y0, y1, 1)
+                                        addVia(i, x0, y1, 1, 2)
+                                        addVia(i, x0, y1, 2, 3)
+                                        addVia(i, x0, y1, 3, 4)
+                                        addVia(i, x0, y1, 4, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addHori(i, x0, x1, y1, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)  
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M8')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addHori(i, x0, x1, y0, 6)
+                                        addVia(i, x1, y0, 6, 7)
+                                        addVert(i, x1, y0, y1, 7)
                                         addVia(i, x1, y1, 7, 6)
                                         addVia(i, x1, y1, 6, 5)
                                         addVia(i, x1, y1, 5, 4)
                                         addVia(i, x1, y1, 4, 3)
                                         addVia(i, x1, y1, 3, 2)
                                         addVia(i, x1, y1, 2, 1)
-                                    else: vertFail = vertFail + 1    
-                                else: vertFail = vertFail + 1        
-                            else: vertFail = vertFail + 1            
-                        else: vertFail = vertFail + 1                
-                    else:vertFail = vertFail + 1
-                elif y0 == y1:    #If the start and end are on the same y
-                    horiAttempt = horiAttempt + 1
-                    if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check via at start from M2 to M3 and via at end from M3 to M2
-                        if segOpen(i, x0, y0, 2, x1, 1):  #Try M3 horizontal line from start to end
-                            print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M3')
-                            addVia(i, x0, y0, 1, 2)
-                            addHori(i, x0, x1, y0, 2) 
-                            addVia(i, x1, y1, 2, 1)
-                        elif segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and SUBOPTIMAL_PATTERNS: #If M3 horizontal line fails, Check vias at start from M3 to M4 and M4 to M5, and end from M5 to M4 and M4 to M3
-                            if segOpen(i, x0, y0, 4, x1, 1):  #Check horizontal line from start to end on M5
-                                print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M5')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addHori(i, x0, x1, y0, 4) 
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-#maybe try X spaces to left/right U routes
-                            elif ADDITIONAL_PATTERN_LAYERS:
-                                if segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M5 horizontal line fails, Check vias at start from M5 to M6 and M6 to M7, and end from M7 to M6 and M6 to M5
-                                    if segOpen(i, x0, y0, 6, x1, 1):  #Check horizontal line from start to end on M7
-                                        print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M7')
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M7')
                                         addVia(i, x0, y0, 1, 2)
                                         addVia(i, x0, y0, 2, 3)
                                         addVia(i, x0, y0, 3, 4)
                                         addVia(i, x0, y0, 4, 5)
                                         addVia(i, x0, y0, 5, 6)
-                                        addHori(i, x0, x1, y0, 6) 
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVert(i, x0, y0, y1, 7)
+                                        addVia(i, x0, y1, 7, 6)
+                                        addHori(i, x0, x1, y1, 6)
                                         addVia(i, x1, y1, 6, 5)
                                         addVia(i, x1, y1, 5, 4)
                                         addVia(i, x1, y1, 4, 3)
                                         addVia(i, x1, y1, 3, 2)
                                         addVia(i, x1, y1, 2, 1)
-                                    elif segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x1, y1, 8, 7, 0): #If M7 horizontal line fails, Check vias at start from M7 to M8 and M8 to M9, and end from M9 to M8 and M8 to M3
-                                        if segOpen(i, x0, y0, 8, x1, 1):  #Check horizontal line from start to end on M9
-                                            print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M9')
-                                            addVia(i, x0, y0, 1, 2)
-                                            addVia(i, x0, y0, 2, 3)
-                                            addVia(i, x0, y0, 3, 4)
-                                            addVia(i, x0, y0, 4, 5)
-                                            addVia(i, x0, y0, 5, 6)
-                                            addVia(i, x0, y0, 6, 7)
-                                            addVia(i, x0, y0, 7, 8)
-                                            addHori(i, x0, x1, y0, 8) 
-                                            addVia(i, x1, y1, 8, 7)
-                                            addVia(i, x1, y1, 7, 6)
-                                            addVia(i, x1, y1, 6, 5)
-                                            addVia(i, x1, y1, 5, 4)
-                                            addVia(i, x1, y1, 4, 3)
-                                            addVia(i, x1, y1, 3, 2)
-                                            addVia(i, x1, y1, 2, 1)
-                                        else: horiFail = horiFail + 1
-                                    else: horiFail = horiFail + 1  
-                                else: horiFail = horiFail + 1           
-                            else:horiFail= horiFail + 1                  
-                        else:horiFail = horiFail + 1                    
-                    else:horiFail = horiFail + 1
-                else:                                   #Start and End point don't share x or y axis
-                    LAttempt = LAttempt + 1
-                    if segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check the vertical path on M2 to intersection, and via from M2 to M3 at intersection, and via on end point from M3 to M2
-                        if segOpen(i, x0, y1, 2, x1, 1): #Check horizontal path from intersection to end on M3
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M3')
-                            addVert(i, x0, y0, y1, 1)
-                            addVia(i, x0, y1, 1, 2)
-                            addHori(i, x0, x1, y1, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        else: LFail = LFail + 1
-                    elif segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x0, y0, 1, 2, 0):      #Check via at start from M2 to M3, and horizontal segment on M3 from start to intersection
-                        if segOpen(i, x1, y0, 1, y1, 2) and segOpen(i, x1, y0, 2, 1, 0):    #Check via at intersection from M3 to M2, and vertical segment on M2
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M2')
-                            addVia(i, x0, y0, 1, 2)
-                            addHori(i, x0, x1, y0, 2)
-                            addVia(i, x1, y0, 2, 1)
-                            addVert(i, x1, y0, y1, 1)
-                        else: LFail = LFail + 1
-                    elif SUBOPTIMAL_PATTERNS:
-                        if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2) and segOpen(i, x1, y1, 2, 1): #Check via at start from M2 to M3, and horizontal segment on M3 from start to intersection, and via at intersection from M3 to M4, and M4 vertical segment, and via from M4 to M3, and via from M3 to M2
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M4')
-                            addVia(i, x0, y0, 1, 2)
-                            addHori(i, x0, x1, y0, 2)
-                            addVia(i, x1, y0, 2, 3)
-                            addVert(i, x1, y0, y1, 3)
-                            addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0): #Check via at start from M2 to M3 and M3 to M4, and vertical segment on M4 from start to intersection, and via at intersection from M4 to M3, and horizontal segment on M3 from intersection to end, and via at end from M3 to M2
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M3')
-                            addVia(i, x0, y0, 1, 2)
-                            addVia(i, x0, y0, 2, 3)
-                            addVert(i, x0, y0, y1, 3)
-                            addVia(i, x0, y1, 3, 2)
-                            addHori(i, x0, x1, y1, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, x1, 3, 2, 0): #Check via at start from M2 to M3, and via at start from M3 to M4, and via at Start from M4 to M5, and horizontal segment on M5 from start to intersection, and via at intersection from M5 to M4, and vertical segment on M4 from intersection to end, and vias at end from M4 to M3, and M3 to M2, 
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M4')
-                            addVia(i, x0, y0, 1, 2)
-                            addVia(i, x0, y0, 2, 3)
-                            addVia(i, x0, y0, 3, 4)
-                            addHori(i, x0, x1, y0, 4)
-                            addVia(i, x1, y0, 4, 3)
-                            addVert(i, x1, y0, y1, 3) 
-                            addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check vias at start from M2 to M3, and M3 to M4, and vertical segment from start to intersection on M4, and via at intersection from M4 to M5, and horizontal segment on M5 from intersection to end, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M5')
-                            addVia(i, x0, y0, 1, 2)
-                            addVia(i, x0, y0, 2, 3)
-                            addVert(i, x0, y0, y1, 3)
-                            addVia(i, x0, y1, 3, 4)
-                            addHori(i, x0, x1, y1, 4)
-                            addVia(i, x1, y1, 4, 3)
-                            addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2): #Check via at start from M2 to M3, and via at start from M3 to M4, and via at Start from M4 to M5, and horizontal segment on M5 from start to intersection, and via at intersection from M5 to M4, and M4 to M3, and M3 to M2, and vertical segment on M2 from intersection to end
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M2')
-                            addVia(i, x0, y0, 1, 2)
-                            addVia(i, x0, y0, 2, 3)
-                            addVia(i, x0, y0, 3, 4)
-                            addHori(i, x0, x1, y0, 4)
-                            addVia(i, x1, y0, 4, 3)
-                            addVia(i, x1, y0, 3, 2)
-                            addVia(i, x1, y0, 2, 1)
-                            addVert(i, x1, y0, y1, 1)
-                        elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check vertical segment at start on M2, and vias at intersection from M2 to M3, and M3 to M4, and M4 to M5, and horizontal segment from intersection to end on M5, and vias at end from M5 to M4, and M4 to M3, and M3 to M2
-                            print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M5')
-                            addVert(i, x0, y0, y1, 1)
-                            addVia(i, x0, y1, 1, 2)
-                            addVia(i, x0, y1, 2, 3)
-                            addVia(i, x0, y1, 3, 4)
-                            addHori(i, x0, x1, y1, 4)
-                            addVia(i, x1, y1, 4, 3)
-                            addVia(i, x1, y1, 3, 2)
-                            addVia(i, x1, y1, 2, 1)
-                        elif ADDITIONAL_PATTERN_LAYERS:
-                            if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M5')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVert(i, x0, y0, y1, 5)
-                                addVia(i, x0, y1, 5, 4)
-                                addHori(i, x0, x1, y1, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M6')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addHori(i, x0, x1, y0, 4)
-                                addVia(i, x1, y0, 4, 5)
-                                addVert(i, x1, y0, y1, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, 4, 0) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M6')
-                                addVia(i, x0, y0, 1, 2)
-                                addHori(i, x0, x1, y0, 2)
-                                addVia(i, x1, y0, 2, 3)
-                                addVia(i, x1, y0, 3, 4)
-                                addVia(i, x1, y0, 4, 5)
-                                addVert(i, x1, y0, y1, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)   
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, 3, 0) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M3')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVert(i, x0, y0, y1, 5)
-                                addVia(i, x0, y1, 5, 4)
-                                addVia(i, x0, y1, 4, 3)
-                                addVia(i, x0, y1, 3, 2)
-                                addHori(i, x0, x1, y1, 2)
-                                addVia(i, x1, y1, 2, 1) 
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M6')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addHori(i, x0, x1, y0, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVert(i, x1, y0, y1, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M7')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVert(i, x0, y0, y1, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addHori(i, x0, x1, y1, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0)and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M4')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addHori(i, x0, x1, y0, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVia(i, x1, y0, 5, 4)
-                                addVia(i, x1, y0, 4, 3)
-                                addVert(i, x1, y0, y1, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M7')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVert(i, x0, y0, y1, 3)
-                                addVia(i, x0, y1, 3, 4)
-                                addVia(i, x0, y1, 4, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addHori(i, x0, x1, y1, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)  
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M2')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addHori(i, x0, x1, y0, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVia(i, x1, y0, 5, 4)
-                                addVia(i, x1, y0, 4, 3)
-                                addVia(i, x1, y0, 3, 2)
-                                addVia(i, x1, y0, 2, 1)
-                                addVert(i, x1, y0, y1, 1)
-                            elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M7')
-                                addVert(i, x0, y0, y1, 1)
-                                addVia(i, x0, y1, 1, 2)
-                                addVia(i, x0, y1, 2, 3)
-                                addVia(i, x0, y1, 3, 4)
-                                addVia(i, x0, y1, 4, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addHori(i, x0, x1, y1, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)  
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, x1, 1) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M7 and M8')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addHori(i, x0, x1, y0, 6)
-                                addVia(i, x1, y0, 6, 7)
-                                addVert(i, x1, y0, y1, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, x1, 1) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M7')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVert(i, x0, y0, y1, 7)
-                                addVia(i, x0, y1, 7, 6)
-                                addHori(i, x0, x1, y1, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, 6, 0) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M8')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addHori(i, x0, x1, y0, 4)
-                                addVia(i, x1, y0, 4, 5)
-                                addVia(i, x1, y0, 5, 6)
-                                addVia(i, x1, y0, 6, 7)
-                                addVert(i, x1, y0, y1, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, 5, 0) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, x1, 1)  and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M5')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVert(i, x0, y0, y1, 7)
-                                addVia(i, x0, y1, 7, 6)
-                                addVia(i, x0, y1, 6, 5)
-                                addVia(i, x0, y1, 5, 4)
-                                addHori(i, x0, x1, y1, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, 4, 0) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, 6, 0) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M8')
-                                addVia(i, x0, y0, 1, 2)
-                                addHori(i, x0, x1, y0, 2)
-                                addVia(i, x1, y0, 2, 3)
-                                addVia(i, x1, y0, 3, 4)
-                                addVia(i, x1, y0, 4, 5)
-                                addVia(i, x1, y0, 5, 6)
-                                addVia(i, x1, y0, 6, 7)
-                                addVert(i, x1, y0, y1, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, 5, 0) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, 3, 0) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M3')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVert(i, x0, y0, y1, 7)
-                                addVia(i, x0, y1, 7, 6)
-                                addVia(i, x0, y1, 6, 5)
-                                addVia(i, x0, y1, 5, 4)
-                                addVia(i, x0, y1, 4, 3)
-                                addVia(i, x0, y1, 3, 2)
-                                addHori(i, x0, x1, y1, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M8')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVia(i, x0, y0, 7, 8)
-                                addHori(i, x0, x1, y0, 8)
-                                addVia(i, x1, y0, 8, 7)
-                                addVert(i, x1, y0, y1, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M9')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVert(i, x0, y0, y1, 7)
-                                addVia(i, x0, y1, 7, 8)
-                                addHori(i, x0, x1, y1, 8)
-                                addVia(i, x1, y1, 8, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M6')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVia(i, x0, y0, 7, 8)
-                                addHori(i, x0, x1, y0, 8)
-                                addVia(i, x1, y0, 8, 7)
-                                addVia(i, x1, y0, 7, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVert(i, x1, y0, y1, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M9')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVert(i, x0, y0, y1, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addVia(i, x0, y1, 6, 7)
-                                addVia(i, x0, y1, 7, 8)
-                                addHori(i, x0, x1, y1, 8)
-                                addVia(i, x1, y1, 8, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M4')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVia(i, x0, y0, 7, 8)
-                                addHori(i, x0, x1, y0, 8)
-                                addVia(i, x1, y0, 8, 7)
-                                addVia(i, x1, y0, 7, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVia(i, x1, y0, 5, 4)
-                                addVia(i, x1, y0, 4, 3)
-                                addVert(i, x1, y0, y1, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M9')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVert(i, x0, y0, y1, 3)
-                                addVia(i, x0, y1, 3, 4)
-                                addVia(i, x0, y1, 4, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addVia(i, x0, y1, 6, 7)
-                                addVia(i, x0, y1, 7, 8)
-                                addHori(i, x0, x1, y1, 8)
-                                addVia(i, x1, y1, 8, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
-                            elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M2')
-                                addVia(i, x0, y0, 1, 2)
-                                addVia(i, x0, y0, 2, 3)
-                                addVia(i, x0, y0, 3, 4)
-                                addVia(i, x0, y0, 4, 5)
-                                addVia(i, x0, y0, 5, 6)
-                                addVia(i, x0, y0, 6, 7)
-                                addVia(i, x0, y0, 7, 8)
-                                addHori(i, x0, x1, y0, 8)
-                                addVia(i, x1, y0, 8, 7)
-                                addVia(i, x1, y0, 7, 6)
-                                addVia(i, x1, y0, 6, 5)
-                                addVia(i, x1, y0, 5, 4)
-                                addVia(i, x1, y0, 4, 3)
-                                addVia(i, x1, y0, 3, 2)
-                                addVia(i, x1, y0, 2, 1)
-                                addVert(i, x1, y0, y1, 1)
-                            elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
-                                print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M9')
-                                addVert(i, x0, y0, y1, 1)
-                                addVia(i, x0, y1, 1, 2)
-                                addVia(i, x0, y1, 2, 3)
-                                addVia(i, x0, y1, 3, 4)
-                                addVia(i, x0, y1, 4, 5)
-                                addVia(i, x0, y1, 5, 6)
-                                addVia(i, x0, y1, 6, 7)
-                                addVia(i, x0, y1, 7, 8)
-                                addHori(i, x0, x1, y1, 8)
-                                addVia(i, x1, y1, 8, 7)
-                                addVia(i, x1, y1, 7, 6)
-                                addVia(i, x1, y1, 6, 5)
-                                addVia(i, x1, y1, 5, 4)
-                                addVia(i, x1, y1, 4, 3)
-                                addVia(i, x1, y1, 3, 2)
-                                addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, x1, 1) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, 6, 0) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M5 and M8')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addHori(i, x0, x1, y0, 4)
+                                        addVia(i, x1, y0, 4, 5)
+                                        addVia(i, x1, y0, 5, 6)
+                                        addVia(i, x1, y0, 6, 7)
+                                        addVert(i, x1, y0, y1, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, 5, 0) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, x1, 1)  and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M5')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVert(i, x0, y0, y1, 7)
+                                        addVia(i, x0, y1, 7, 6)
+                                        addVia(i, x0, y1, 6, 5)
+                                        addVia(i, x0, y1, 5, 4)
+                                        addHori(i, x0, x1, y1, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, 4, 0) and segOpen(i, x1, y0, 4, 5, 0) and segOpen(i, x1, y0, 5, 6, 0) and segOpen(i, x1, y0, 6, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M8')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addHori(i, x0, x1, y0, 2)
+                                        addVia(i, x1, y0, 2, 3)
+                                        addVia(i, x1, y0, 3, 4)
+                                        addVia(i, x1, y0, 4, 5)
+                                        addVia(i, x1, y0, 5, 6)
+                                        addVia(i, x1, y0, 6, 7)
+                                        addVert(i, x1, y0, y1, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 6, 0) and segOpen(i, x0, y1, 6, 5, 0) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, 3, 0) and segOpen(i, x0, y1, 3, 2, 0) and segOpen(i, x0, y1, 2, x1, 1) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M3')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVert(i, x0, y0, y1, 7)
+                                        addVia(i, x0, y1, 7, 6)
+                                        addVia(i, x0, y1, 6, 5)
+                                        addVia(i, x0, y1, 5, 4)
+                                        addVia(i, x0, y1, 4, 3)
+                                        addVia(i, x0, y1, 3, 2)
+                                        addHori(i, x0, x1, y1, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, y1, 2) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M8')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVia(i, x0, y0, 7, 8)
+                                        addHori(i, x0, x1, y0, 8)
+                                        addVia(i, x1, y0, 8, 7)
+                                        addVert(i, x1, y0, y1, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, y1, 2) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M8 and M9')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVert(i, x0, y0, y1, 7)
+                                        addVia(i, x0, y1, 7, 8)
+                                        addHori(i, x0, x1, y1, 8)
+                                        addVia(i, x1, y1, 8, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, y1, 2) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M6')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVia(i, x0, y0, 7, 8)
+                                        addHori(i, x0, x1, y0, 8)
+                                        addVia(i, x1, y0, 8, 7)
+                                        addVia(i, x1, y0, 7, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVert(i, x1, y0, y1, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M9')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVert(i, x0, y0, y1, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addVia(i, x0, y1, 6, 7)
+                                        addVia(i, x0, y1, 7, 8)
+                                        addHori(i, x0, x1, y1, 8)
+                                        addVia(i, x1, y1, 8, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M4')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVia(i, x0, y0, 7, 8)
+                                        addHori(i, x0, x1, y0, 8)
+                                        addVia(i, x1, y0, 8, 7)
+                                        addVia(i, x1, y0, 7, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVia(i, x1, y0, 5, 4)
+                                        addVia(i, x1, y0, 4, 3)
+                                        addVert(i, x1, y0, y1, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, y1, 2) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M4 and M9')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVert(i, x0, y0, y1, 3)
+                                        addVia(i, x0, y1, 3, 4)
+                                        addVia(i, x0, y1, 4, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addVia(i, x0, y1, 6, 7)
+                                        addVia(i, x0, y1, 7, 8)
+                                        addHori(i, x0, x1, y1, 8)
+                                        addVia(i, x1, y1, 8, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    elif segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x0, y0, 8, x1, 1) and segOpen(i, x1, y0, 8, 7, 0) and segOpen(i, x1, y0, 7, 6, 0) and segOpen(i, x1, y0, 6, 5, 0) and segOpen(i, x1, y0, 5, 4, 0) and segOpen(i, x1, y0, 4, 3, 0) and segOpen(i, x1, y0, 3, 2, 0) and segOpen(i, x1, y0, 2, 1, 0) and segOpen(i, x1, y0, 1, y1, 2):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M9 and M2')
+                                        addVia(i, x0, y0, 1, 2)
+                                        addVia(i, x0, y0, 2, 3)
+                                        addVia(i, x0, y0, 3, 4)
+                                        addVia(i, x0, y0, 4, 5)
+                                        addVia(i, x0, y0, 5, 6)
+                                        addVia(i, x0, y0, 6, 7)
+                                        addVia(i, x0, y0, 7, 8)
+                                        addHori(i, x0, x1, y0, 8)
+                                        addVia(i, x1, y0, 8, 7)
+                                        addVia(i, x1, y0, 7, 6)
+                                        addVia(i, x1, y0, 6, 5)
+                                        addVia(i, x1, y0, 5, 4)
+                                        addVia(i, x1, y0, 4, 3)
+                                        addVia(i, x1, y0, 3, 2)
+                                        addVia(i, x1, y0, 2, 1)
+                                        addVert(i, x1, y0, y1, 1)
+                                    elif segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x0, y1, 2, 3, 0) and segOpen(i, x0, y1, 3, 4, 0) and segOpen(i, x0, y1, 4, 5, 0) and segOpen(i, x0, y1, 5, 6, 0) and segOpen(i, x0, y1, 6, 7, 0) and segOpen(i, x0, y1, 7, 8, 0) and segOpen(i, x0, y1, 8, x1, 1) and segOpen(i, x1, y1, 8, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
+                                        print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M2 and M9')
+                                        addVert(i, x0, y0, y1, 1)
+                                        addVia(i, x0, y1, 1, 2)
+                                        addVia(i, x0, y1, 2, 3)
+                                        addVia(i, x0, y1, 3, 4)
+                                        addVia(i, x0, y1, 4, 5)
+                                        addVia(i, x0, y1, 5, 6)
+                                        addVia(i, x0, y1, 6, 7)
+                                        addVia(i, x0, y1, 7, 8)
+                                        addHori(i, x0, x1, y1, 8)
+                                        addVia(i, x1, y1, 8, 7)
+                                        addVia(i, x1, y1, 7, 6)
+                                        addVia(i, x1, y1, 6, 5)
+                                        addVia(i, x1, y1, 5, 4)
+                                        addVia(i, x1, y1, 4, 3)
+                                        addVia(i, x1, y1, 3, 2)
+                                        addVia(i, x1, y1, 2, 1)
+                                    else: LFail = LFail + 1
+                                else: LFail = LFail + 1
+        #Can optimize L's by tracking previously checked segments
+        #Yeah I'm not doing z routes... unless... nah nevermind... weelllllll  IDK, I think at that point I should do a real router
                             else: LFail = LFail + 1
-                        else: LFail = LFail + 1
-#Can optimize L's by tracking previously checked segments
-#Yeah I'm not doing z routes... unless... nah nevermind... weelllllll  IDK, I think at that point I should do a real router
-                    else: LFail = LFail + 1
-            if hpwl < nextSmallestLength and hpwl > patternLength:  #Every iteration scan each net to find the next smallest value
-                    nextSmallestLength = hpwl
-        if nextSmallestLength == patternLength: #If no next smallest was found  
-            break   #End pattern routing
-        elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the mad pattern size
-            break   #End pattern routing   
-        patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
-"""
+                    if hpwl < nextSmallestLength and hpwl > patternLength:  #Every iteration scan each net to find the next smallest value
+                            nextSmallestLength = hpwl
+            if nextSmallestLength == patternLength: #If no next smallest was found  
+                break   #End pattern routing
+            elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the mad pattern size
+                break   #End pattern routing   
+            patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
+
+patternRouter() 
+
 for i in range(NET_COUNT):
     if netList[i][6] == 0:  #If a net failed to route
-        for j in range(2, NUM_LAYERS):  #Scan all the layers above the start/end vias
+        for j in range(2, NUM_LAYERS-6):  #Scan all the layers above the start/end vias
             if layoutGrid[netList[i][0]][netList[i][1]][j][0] != -1:    #If there's something there
                 conflictNet = layoutGrid[netList[i][0]][netList[i][1]][j][0]
-                for k in range(len(segList[conflictNet])):
-                    if segList[conflictNet][k][2] == 0:
-                        for l in range()
-                    elif segList[conflictNet][k][2] == 1:
+                print(f'Removing Net {conflictNet}')
+                posx = netList[conflictNet][0]    #step through the whole net and remove each cell from layoutGrid
+                posy = netList[conflictNet][1]
+                posz = 0
+                lastMove = 0
+                while (posx != netList[conflictNet][2] or posy != netList[conflictNet][3] or posz != 0):
+                    layoutGrid[posx][posy][posz][0] = -1
+                    if segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 0:
+                        if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == conflictNet and lastMove != 6:
+                            posz = posz + 1
+                            lastMove = 5
+                        elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == conflictNet and lastMove != 5:
+                            posz = posz - 1
+                            lastMove = 6
+                        else:
+                            print(f'Error: Unable to trace Net {i}')
+                            break
+                    elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 1:
+                        if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == conflictNet and lastMove != 2:
+                            posx = posx + 1
+                            lastMove = 1
+                        elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == conflictNet and lastMove != 1:
+                            posx = posx - 1
+                            lastMove = 2
+                        else:
+                            print(f'Error: Unable to trace Net {i}')
+                            break
+                    elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 2:    
+                        if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == conflictNet and lastMove != 4:
+                            posy = posy + 1
+                            lastMove = 3
+                        elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == conflictNet and lastMove != 3:
+                            posy = posy - 1
+                            lastMove = 4
+                        else:
+                            print(f'Error: Unable to trace Net {i}')
+                            break
+                    else:
+                        print(f'Error: Unable to trace Net {i}')
+                        break
+                netList[conflictNet][6] = 0 #Mark net as unrouted
+                segList[conflictNet].clear()  #clear seg list, re add start/end vias to segList and layoutGrid
+                segList[conflictNet] = [[[netList[conflictNet][0], netList[conflictNet][1], 0], [netList[conflictNet][0], netList[conflictNet][1], 1], 0], #First via from M1 to M2
+                                        [[netList[conflictNet][2], netList[conflictNet][3], 1], [netList[conflictNet][2], netList[conflictNet][3], 0], 0]] #Last via from M2 to M1 
+                layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][0] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i, 0), conflictNet]
+                layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][1] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i, 0), conflictNet]
+                layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][0] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 0, i), -1, conflictNet]
+                layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][1] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 1, i), -1, conflictNet]
 
-                    if segList[conflictNet][k][2] == 2:
-"""
-
-
-
+patternRouter() 
 
 #Maybe once it finishes it's first pass, it rips up anything that's blocking an unrouted start/end via on any layer.
 #I don't want to prevent the first pass from covering vias since it might prevent good routes. Try it though, maybe the tests are built weird
@@ -826,6 +879,7 @@ for i in range(NET_COUNT):
             print(f'Error: Invalid segment direction on Net {i}, Segment{j}')
         if j != len(segList[i]) - 1 and netList[i][6] != 0: #If it's not the last segment and the net is routed
             if segList[i][j][1] != segList[i][j+1][0]:      #Make sure the end of this one matches the start of the next
+                print(f'End of curr seg {segList[i][j][1]} Start of next seg {segList[i][j+1][0]}')
                 print(f'Error: The end of Net {i}, Segment {j} does not match the start of Segment {j + 1}')
     cost = netCost + cost
     if netList[i][6] != 0:
