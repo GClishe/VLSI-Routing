@@ -4,7 +4,7 @@
 #
 
 #User parameters
-DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
+DATA_NAME = 'Rtest_1000_25000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
 NUM_LAYERS = 9                          #Set the number of layers available
 MAX_PATTERN_SIZE = -1                   #Set the maximum HPWL that pattern routing should be used for. Set to 0 to disable pattern routing, and -1 to automatically scale it to the largest HPWL
 ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
@@ -55,132 +55,127 @@ def netCostStartToCell (x: int, y: int, z:int, net: int, seg: int) -> int:  #Fin
     #Need net and segment because this can be called during layoutGrid updates. Still need to make sure segList is updated first
     #Follow that segment back to the start (segments can only go in one direction), go to prior segment, repeat
     direction = segList[net][seg][2]    #Handle first segment separately since you only do part of it
-    if direction == 0:          #Via
+    if direction == 0:                  #Via
         cost = 2 * abs(segList[net][seg][0][2] - z)
-    elif direction == 1:        #Hori
+    elif direction == 1:                #Hori
         cost = abs(segList[net][seg][0][0] - x)
-    else:                       #Vert
+    else:                               #Vert
         cost = abs(segList[net][seg][0][1] - y)
     for i in range(seg - 1, -1, -1):    #Step backwards through the segments
         direction = segList[net][i][2]
-        if direction == 0:      #Via
+        if direction == 0:              #Via
             cost = cost + 2 * abs(segList[net][i][1][2] - segList[net][i][0][2])
-        elif direction == 1:    #Hori
+        elif direction == 1:            #Hori
             cost = cost + abs(segList[net][i][1][0] - segList[net][i][0][0])
-        else:                   #Vert
+        else:                           #Vert
             cost = cost + abs(segList[net][i][1][1] - segList[net][i][0][1])
     return cost
 
-def netCostCellToEnd(x: int, y: int, z:int, net:int) -> int:    #Find the predicted remaining cost of the net from this cell
-    return abs(netList[net][2] - x) + abs(netList[net][3] - y) + z*2  #3D Manhattan z*2 for vias is fine for now
-#######################################################
-def addVia (net: int, x:int, y:int, startLayer:int, endLayer:int):     #Adds a via segment to the segment list and layout grid. Updates cost
-    global segList
-    seg = len(segList[net])-1
-    segList[net].insert(seg, [[x, y, startLayer], [x, y, endLayer], 0])  #Put new segment before end
-    global layoutGrid
+def netCostCellToEnd(x: int, y: int, z:int, net:int) -> int:            #Find the predicted remaining cost of the net from this cell
+    return abs(netList[net][2] - x) + abs(netList[net][3] - y) + z*2    #3D Manhattan z*2 for vias is fine for now
+
+def addVia (net: int, x:int, y:int, startLayer:int, endLayer:int):      #Adds a via segment to the segment list and layout grid. Updates cost
+    global segList, layout
+    seg = len(segList[net])-1                                           #Set target index to what's currently the last segment
+    segList[net].insert(seg, [[x, y, startLayer], [x, y, endLayer], 0]) #Put new segment there and push the existing one out to index + 1
     layoutGrid[x][y][startLayer] = [net, seg, netCostCellToEnd(x,y, startLayer, net), netCostStartToCell(x, y, startLayer, net, seg), net]  #Fill in starting layer
     layoutGrid[x][y][endLayer] = [net, seg, netCostCellToEnd(x, y, endLayer, net), netCostStartToCell(x, y, endLayer, net, seg), net]       #Fill in destination layer
-    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
-    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this via but the end takes priority
-    if (x, y, endLayer) == (netList[net][2], netList[net][3], 1):   #If this via and the end via overlap
+    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1        #Update lower end via's segment ID on the layout grid
+    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1        #Update the segment ID of the upper part of the end via. This can overwrite the end of this via but the end takes priority
+    if (x, y, endLayer) == (netList[net][2], netList[net][3], 1):       #If this via and the end via overlap
         cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
-        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
-        netList[net][6] = cost                                      #Use this cost to update netList
+        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost      #Update cost start to cell of lower via
+        netList[net][6] = cost                                          #Use this cost to update netList
 
-def addHori (net: int, xStart:int, xEnd:int, y:int, z:int):     #Adds a horizontal segment to the segment list and layout grid. Updates cost
-    global segList
-    seg = len(segList[net])-1
-    segList[net].insert(seg, [[xStart, y, z], [xEnd, y, z], 1])  #Put new segment before end
-    global layoutGrid
-    stepIteration = 1
-    if  xStart > xEnd:
-        stepIteration = -1
-    for x in range(xStart, xEnd + stepIteration, stepIteration):   #Fill in cells
+def addHori (net: int, xStart:int, xEnd:int, y:int, z:int):             #Adds a horizontal segment to the segment list and layout grid. Updates cost
+    global segList, layoutGrid
+    seg = len(segList[net])-1                                           #Set target index to what's currently the last segment
+    segList[net].insert(seg, [[xStart, y, z], [xEnd, y, z], 1])         #Put new segment there and push the existing one out to index + 1
+    if  xStart > xEnd: stepIteration = -1                               #Decide rather to step through the segment left to right or right to left
+    else: stepIteration = 1  
+    for x in range(xStart, xEnd + stepIteration, stepIteration):        #Fill in cells
         layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
-    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
-    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
-    if (xEnd, y, z) == (netList[net][2], netList[net][3], 1):       #If this segment and the end via overlap
+    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1        #Update lower end via's segment ID on the layout grid
+    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1        #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end via takes priority
+    if (xEnd, y, z) == (netList[net][2], netList[net][3], 1):           #If this segment and the end via overlap
         cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
-        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
-        netList[net][6] = cost                                      #Use this cost to update netList
+        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost      #Update cost start to cell of lower via
+        netList[net][6] = cost                                          #Use this cost to update netList
 
-def addVert (net: int, x:int, yStart: int, yEnd:int, z:int):     #Adds a horizontal segment to the segment list and layout grid. Updates cost
-    global segList
-    seg = len(segList[net])-1
-    segList[net].insert(seg, [[x, yStart, z], [x, yEnd, z], 2])  #Put new segment before end
-    global layoutGrid
-    stepIteration = 1
-    if  yStart > yEnd:
-        stepIteration = -1
-    for y in range(yStart, yEnd + stepIteration, stepIteration):   #Fill in cells
+def addVert (net: int, x:int, yStart: int, yEnd:int, z:int):            #Adds a horizontal segment to the segment list and layout grid. Updates cost
+    global segList, layoutGrid
+    seg = len(segList[net])-1                                           #Set target index to what's currently the last segment
+    segList[net].insert(seg, [[x, yStart, z], [x, yEnd, z], 2])         #Put new segment there and push the existing one out to index + 1
+    if  yStart > yEnd: stepIteration = -1                               #Decide rather to step through the segment top to bottom or bottom to top
+    else: stepIteration = 1
+    for y in range(yStart, yEnd + stepIteration, stepIteration):        #Fill in cells
         layoutGrid[x][y][z] = [net, seg, netCostCellToEnd(x, y, z, net), netCostStartToCell(x, y, z, net, seg), net]
-    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1    #Update lower end via's segment ID on the layout grid
-    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1    #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end takes priority
-    if (x, yEnd, z) == (netList[net][2], netList[net][3], 1):       #If this segment and the end via overlap
+    layoutGrid[netList[net][2]][netList[net][3]][0][1] = seg + 1        #Update lower end via's segment ID on the layout grid
+    layoutGrid[netList[net][2]][netList[net][3]][1][1] = seg + 1        #Update the segment ID of the upper part of the end via. This can overwrite the end of this segment but the end via takes priority
+    if (x, yEnd, z) == (netList[net][2], netList[net][3], 1):           #If this segment and the end via overlap
         cost = netCostStartToCell(netList[net][2], netList[net][3], 0, net, seg + 1)
-        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost  #Update cost start to cell of lower via
-        netList[net][6] = cost                                      #Use this cost to update netList
+        layoutGrid[netList[net][2]][netList[net][3]][0][3] =  cost      #Update cost start to cell of lower via
+        netList[net][6] = cost                                          #Use this cost to update netList
 
-def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
+def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:     #See if a proposed segment is open
     stepIteration = 1
-    if dir == 0:    #Via
-        if (abs(z - dest) != 1):    #Check that via is only one long (No speedup from removing checks)
+    if dir == 0:                                                        #If the proposed segment is a via
+        if (abs(z - dest) != 1):                                        #Check that via is only one long (No speedup from removing checks)
             print(f'Error: Attempted to place illegal via {net}')
             return False
-        if  dest < z:
+        if  dest < z:                                                   #Decide on via direction
             stepIteration = -1
-        for step in range(z, dest + stepIteration, stepIteration):
-            if (layoutGrid[x][y][int(step)][0] not in {-1, net}):   #Traditional != and != is slower
+        for step in range(z, dest + stepIteration, stepIteration):      #Step through the via
+            if (layoutGrid[x][y][int(step)][0] not in {-1, net}):       #Check if the cell is occupied by another net (Traditional != and != is slower)
                 return False
-    elif dir == 1:      #Hori
-        if z % 2 == 1:  #Check that horizontal segment is on an even layer (M1 = index 0)
+    elif dir == 1:                                                      #If the proposed segment is horizontal
+        if z % 2 == 1:                                                  #Check that horizontal segment is on an even layer (M1 = index 0)
             print('Error: Attempted to place horizontal segment on vertical layer')
             return False
-        if dest < x:
+        if dest < x:                                                    #Decide on direction
             stepIteration = -1
-        for step in range(x, dest + stepIteration, stepIteration):
-            if layoutGrid[int(step)][y][z][0] not in {-1, net}:
+        for step in range(x, dest + stepIteration, stepIteration):      #Step through the negment
+            if layoutGrid[int(step)][y][z][0] not in {-1, net}:         #Check if the cell is occupied by another net
                 return False
-    else:               #Vert
-        if z % 2 == 0:  #Check that vertival segment is on an odd layer (M1 = index 0)
+    else:                                                               #If the proposed segment is vertical
+        if z % 2 == 0:                                                  #Check that vertival segment is on an odd layer (M1 = index 0)
             print('Error: Attempted to place vertical segment on horizontal layer')
             return False
-        if dest < y:
+        if dest < y:                                                    #Decide on a direction
             stepIteration = -1
-        for step in range(y, dest + stepIteration, stepIteration):
-            if layoutGrid[x][int(step)][z][0] not in {-1, net}:
+        for step in range(y, dest + stepIteration, stepIteration):      #Step through the segment
+            if layoutGrid[x][int(step)][z][0] not in {-1, net}:         #Check if the cell is occupied by another net
                 return False
-    return True
+    return True                                                         #If everything is clear, return true
 
-def tallyRouted() -> int:
-    routedNets = 0                          #Find how many nets were routed
+def tallyRouted() -> int:                                               #Count how many nets are routed
+    routedNets = 0                          
     for i in range(NET_COUNT):
         if netList[i][6] != 0:
             routedNets = routedNets + 1
     return routedNets
 
-def patternRouter():    #Attempt pattern routing
+def patternRouter():                            #Attempt pattern routing on unrouted nets
     global layoutGrid, netList, segList
-    maxPatternSize = MAX_PATTERN_SIZE
-    patternLength = 1       #Set initial max HPWL size to pattern route as 1
+    maxPatternSize = MAX_PATTERN_SIZE           #Make local variable copy of max pattern size. This value is the end condition for the loop
+    patternLength = 1                           #Set initial max HPWL size to pattern route as 1. This value is the size it looks for this iteration
     horiAttempt = horiFail = vertAttempt = vertFail = LAttempt = LFail = 0
     if maxPatternSize == -1:                    #If max pattern size is adaptive
         for i in range(NET_COUNT):              #Iterate throught the nets
             if maxPatternSize < netList[i][4]:  #And find the largest HPWL
                 maxPatternSize = netList[i][4]  #Update value
     while(1):
-        nextSmallestLength = GRID_SIZE * 2      #Reset next smallest tracker
+        nextSmallestLength = GRID_SIZE * 2      #Reset next smallest tracker. As it goes, it looks for the next smallest HPWL to use for the next iteration. 
         for i in range(NET_COUNT):              #For all nets
-            if netList[i][6] == 0:
-                hpwl = netList[i][4]
-                if hpwl == patternLength:           #If the HPWL of this net is small enough
-                    x0 = netList[i][0]                  #I added these to make it faster, it didn't, but it made it a lot easier to read so I kept it
+            if netList[i][6] == 0:              #That are unrouted
+                hpwl = netList[i][4]            #Alias HPWL of this net for easier reference (no speedup but it made the code look nicer)
+                if hpwl == patternLength:       #If the HPWL of this net matches the target patternLength for this iteration
+                    x0 = netList[i][0]          #Alias the start and end pin positions
                     y0 = netList[i][1]
                     x1= netList[i][2]
                     y1 = netList[i][3]
-                    if x0 == x1:                    #If the start and end are on the same x
-                        vertAttempt = vertAttempt + 1
+                    if x0 == x1:                                #If the start and end are on the same x
+                        vertAttempt = vertAttempt + 1           #Record that the pattern router attempted a ertical line routes
                         if segOpen(i, x0, y0, 1, y1, 2):        #Check vertical line from start to end on M2
                             print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M2')
                             addVert(i, x0, y0, y1, 1) 
@@ -195,9 +190,9 @@ def patternRouter():    #Attempt pattern routing
     #If I come back to it, I should lock the optimal pattern routes
     #maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
     #Or try staggared routes
-                            elif ADDITIONAL_PATTERN_LAYERS:
+                            elif ADDITIONAL_PATTERN_LAYERS:                 #If enabled, try higher layers before giving up
                                 if segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0): #If M4 vertical line fails, Check via from M4 to M5 and M5 to M6 at start and M6 to M5 and M5 to M4 at end
-                                    if segOpen(i, x0, y0, 5, y1, 2):  #Check vertical line on M6
+                                    if segOpen(i, x0, y0, 5, y1, 2):        #Check vertical line on M6
                                         print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M6')
                                         addVia(i, x0, y0, 1, 2)
                                         addVia(i, x0, y0, 2, 3)
@@ -209,7 +204,7 @@ def patternRouter():    #Attempt pattern routing
                                         addVia(i, x1, y1, 3, 2)
                                         addVia(i, x1, y1, 2, 1)
                                     elif segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M8 vertical line fails, Check via from M6 to M7 and M7 to M8 at start and M8 to M7 and M7 to M6 at end
-                                        if segOpen(i, x0, y0, 7, y1, 2):  #Check vertical line on M6
+                                        if segOpen(i, x0, y0, 7, y1, 2):    #Check vertical line on M8
                                             print(f'Routed Net {i} with HPWL {patternLength} using a vertical line on M8')
                                             addVia(i, x0, y0, 1, 2)
                                             addVia(i, x0, y0, 2, 3)
@@ -224,21 +219,21 @@ def patternRouter():    #Attempt pattern routing
                                             addVia(i, x1, y1, 4, 3)
                                             addVia(i, x1, y1, 3, 2)
                                             addVia(i, x1, y1, 2, 1)
-                                        else: vertFail = vertFail + 1    
+                                        else: vertFail = vertFail + 1       #If it gets to the end on any path, record that a vertical line failed to route
                                     else: vertFail = vertFail + 1        
                                 else: vertFail = vertFail + 1            
                             else: vertFail = vertFail + 1                
                         else:vertFail = vertFail + 1
-                    elif y0 == y1:    #If the start and end are on the same y
-                        horiAttempt = horiAttempt + 1
+                    elif y0 == y1:                                          #If the start and end are on the same y
+                        horiAttempt = horiAttempt + 1                       #Record that the pattern router attempted a horizontal line route
                         if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check via at start from M2 to M3 and via at end from M3 to M2
-                            if segOpen(i, x0, y0, 2, x1, 1):  #Try M3 horizontal line from start to end
+                            if segOpen(i, x0, y0, 2, x1, 1):                #Try M3 horizontal line from start to end
                                 print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M3')
                                 addVia(i, x0, y0, 1, 2)
                                 addHori(i, x0, x1, y0, 2) 
                                 addVia(i, x1, y1, 2, 1)
                             elif segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x1, y1, 4, 3, 0) and SUBOPTIMAL_PATTERNS: #If M3 horizontal line fails, Check vias at start from M3 to M4 and M4 to M5, and end from M5 to M4 and M4 to M3
-                                if segOpen(i, x0, y0, 4, x1, 1):  #Check horizontal line from start to end on M5
+                                if segOpen(i, x0, y0, 4, x1, 1):            #Check horizontal line from start to end on M5
                                     print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M5')
                                     addVia(i, x0, y0, 1, 2)
                                     addVia(i, x0, y0, 2, 3)
@@ -247,10 +242,9 @@ def patternRouter():    #Attempt pattern routing
                                     addVia(i, x1, y1, 4, 3)
                                     addVia(i, x1, y1, 3, 2)
                                     addVia(i, x1, y1, 2, 1)
-    #maybe try X spaces to left/right U routes
-                                elif ADDITIONAL_PATTERN_LAYERS:
+                                elif ADDITIONAL_PATTERN_LAYERS:             #If enabled, try higher layers before giving up
                                     if segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x0, y0, 5, 6, 0) and segOpen(i, x1, y1, 6, 5, 0): #If M5 horizontal line fails, Check vias at start from M5 to M6 and M6 to M7, and end from M7 to M6 and M6 to M5
-                                        if segOpen(i, x0, y0, 6, x1, 1):  #Check horizontal line from start to end on M7
+                                        if segOpen(i, x0, y0, 6, x1, 1):    #Check horizontal line from start to end on M7
                                             print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M7')
                                             addVia(i, x0, y0, 1, 2)
                                             addVia(i, x0, y0, 2, 3)
@@ -264,7 +258,7 @@ def patternRouter():    #Attempt pattern routing
                                             addVia(i, x1, y1, 3, 2)
                                             addVia(i, x1, y1, 2, 1)
                                         elif segOpen(i, x0, y0, 6, 7, 0) and segOpen(i, x1, y1, 7, 6, 0) and segOpen(i, x0, y0, 7, 8, 0) and segOpen(i, x1, y1, 8, 7, 0): #If M7 horizontal line fails, Check vias at start from M7 to M8 and M8 to M9, and end from M9 to M8 and M8 to M3
-                                            if segOpen(i, x0, y0, 8, x1, 1):  #Check horizontal line from start to end on M9
+                                            if segOpen(i, x0, y0, 8, x1, 1):#Check horizontal line from start to end on M9
                                                 print(f'Routed Net {i} with HPWL {patternLength} using a horizontal line on M9')
                                                 addVia(i, x0, y0, 1, 2)
                                                 addVia(i, x0, y0, 2, 3)
@@ -281,13 +275,13 @@ def patternRouter():    #Attempt pattern routing
                                                 addVia(i, x1, y1, 4, 3)
                                                 addVia(i, x1, y1, 3, 2)
                                                 addVia(i, x1, y1, 2, 1)
-                                            else: horiFail = horiFail + 1
+                                            else: horiFail = horiFail + 1   #If it gets to the end on any path, record that a horizonal line failed to route
                                         else: horiFail = horiFail + 1  
                                     else: horiFail = horiFail + 1           
                                 else:horiFail= horiFail + 1                  
                             else:horiFail = horiFail + 1                    
                         else:horiFail = horiFail + 1
-                    else:                                   #Start and End point don't share x or y axis
+                    else:                                                   #Start and End point don't share x or y axis
                         LAttempt = LAttempt + 1
                         if segOpen(i, x0, y0, 1, y1, 2) and segOpen(i, x0, y1, 1, 2, 0) and segOpen(i, x1, y1, 2, 1, 0): #Check the vertical path on M2 to intersection, and via from M2 to M3 at intersection, and via on end point from M3 to M2
                             if segOpen(i, x0, y1, 2, x1, 1): #Check horizontal path from intersection to end on M3
@@ -305,7 +299,7 @@ def patternRouter():    #Attempt pattern routing
                                 addVia(i, x1, y0, 2, 1)
                                 addVert(i, x1, y0, y1, 1)
                             else: LFail = LFail + 1
-                        elif SUBOPTIMAL_PATTERNS:
+                        elif SUBOPTIMAL_PATTERNS:                           #If enabled, extend search area to M4 and 5
                             if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, x1, 1) and segOpen(i, x1, y0, 2, 3, 0) and segOpen(i, x1, y0, 3, y1, 2) and segOpen(i, x1, y1, 3, 2) and segOpen(i, x1, y1, 2, 1): #Check via at start from M2 to M3, and horizontal segment on M3 from start to intersection, and via at intersection from M3 to M4, and M4 vertical segment, and via from M4 to M3, and via from M3 to M2
                                 print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M3 and M4')
                                 addVia(i, x0, y0, 1, 2)
@@ -362,7 +356,7 @@ def patternRouter():    #Attempt pattern routing
                                 addVia(i, x1, y1, 4, 3)
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)
-                            elif ADDITIONAL_PATTERN_LAYERS:
+                            elif ADDITIONAL_PATTERN_LAYERS:         #If enabled, extend search area to M9
                                 if segOpen(i, x0, y0, 1, 2, 0) and segOpen(i, x0, y0, 2, 3, 0) and segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x0, y0, 5, y1, 2) and segOpen(i, x0, y1, 5, 4, 0) and segOpen(i, x0, y1, 4, x1, 1) and segOpen(i, x1, y1, 4, 3, 0) and segOpen(i, x1, y1, 3, 2, 0) and segOpen(i, x1, y1, 2, 1, 0):
                                     print(f'Routed Net {i} with HPWL {patternLength} using an L pattern on M6 and M5')
                                     addVia(i, x0, y0, 1, 2)
@@ -744,10 +738,10 @@ def patternRouter():    #Attempt pattern routing
                         nextSmallestLength = hpwl
         if nextSmallestLength == patternLength: #If no next smallest was found  
             break   #End pattern routing
-        elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the mad pattern size
+        elif nextSmallestLength > maxPatternSize:  #If the next smallest pattern size exceeds the max pattern size
             break   #End pattern routing   
         patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
-    return horiAttempt, horiFail, vertAttempt, vertFail, LAttempt, LFail
+    return horiAttempt, horiFail, vertAttempt, vertFail, LAttempt, LFail    #When the loop is done, return the telemetry
 """
 def ripperUpper() -> int:
     global layoutGrid, segList, netList
