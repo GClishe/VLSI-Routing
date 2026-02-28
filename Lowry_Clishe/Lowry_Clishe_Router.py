@@ -4,14 +4,17 @@
 #
 
 #User parameters
-DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
+DATA_NAME = 'Rtest_500_6000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
 MASTER_SEED = 123456789                 #Set seed to make RND reproducable.
 NUM_LAYERS = 9                          #Set the number of layers available
 MAX_PATTERN_SIZE = -1                   #Set the maximum length pattern routing should be used for. Set to 0 to disable pattern routing step, and -1 for auto
 ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
 SUBOPTIMAL_PATTERNS = True              #Allow patterns to extend past the first layer they are allowed to be on, as well as enabling detouring patterns like U and Z. If disabled, ADDITIONAL_PATTERN_LAYERS won't do anything
-GENERATE_GRAPHS = False                  #Enables generation of 3D graphs to show final route
-SHOW_GRAPH = False                      #Enables an interactive version of the graph to appear when finished
+ROUTE_TIME_LIMIT = 0.025                #Seconds to allow for an A* attempt per HPWL
+RIPUP_MAX_LAYER = 3                     #After first routing attempt, if there are still nets unrouted, it will clear any routes in the area above their start/end pins. How high should this go. Ex 3 = rip up M3
+NUM_ITERATIONS = 1                      #Number of times to try riping up and rerouting
+GENERATE_GRAPHS = True                  #Enables generation of 3D graphs to show final route
+SHOW_GRAPH = True                       #Enables an interactive version of the graph to appear when finished
 
 #Set import / export folder names based on data set
 if DATA_NAME[:2] == 'Re':               #If the name of the data set starts with Re
@@ -148,24 +151,13 @@ def segOpen (net:int, x: int, y: int, z: int, dest: int, dir: int) -> bool:
                 return False
     return True
 
-#def costCellToLastSeg 
-#Trace the currently tracing variables back to the last segment in the net
-#Need to clear the currently tracing net variable for all cells at the end of each search
+def tallyRouted():
+    routedNets = 0                          #Find how many nets were routed
+    for i in range(NET_COUNT):
+        if netList[i][6] != 0:
+            routedNets = routedNets + 1
+    return routedNets
 
-
-
-#Start routing
-startTime = time.perf_counter()     #Start timer
-for i in range(NET_COUNT):  #Fill the empty lists with first and last segment as well as a value to indicate type of segment
-    segList[i] = [[[netList[i][0], netList[i][1], 0], [netList[i][0], netList[i][1], 1], 0], #First via from M1 to M2
-                [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
-for i in range(NET_COUNT):  #Manually add start and end vias for each net to layoutGrid
-    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 0, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 0, i, 0), i]
-    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 1, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 1, i, 0), i]
-    layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 0, i), -1, i]
-    layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
-
-    
 def patternRouter():    #Attempt pattern routing
     global layoutGrid
     global netList
@@ -768,63 +760,235 @@ def patternRouter():    #Attempt pattern routing
                 break   #End pattern routing   
             patternLength = nextSmallestLength  #If the loop hasn't broken, commit nextSmallestLength to be the next attempted pattern length
 
-patternRouter() 
+def ripperUpper():
+    global layoutGrid, segList, netList
+    ripCount = 0
+    for i in range(NET_COUNT):
+        if netList[i][6] == 0:  #If a net failed to route
+            for j in range(2, RIPUP_MAX_LAYER):  #Scan all the layers above the start/end vias
+                if layoutGrid[netList[i][0]][netList[i][1]][j][0] != -1:    #If there's something there
+                    conflictNet = layoutGrid[netList[i][0]][netList[i][1]][j][0]
+                    print(f'Removing Net {conflictNet}')
+                    posx = netList[conflictNet][0]    #step through the whole net and remove each cell from layoutGrid
+                    posy = netList[conflictNet][1]
+                    posz = 0
+                    lastMove = 0
+                    while (posx != netList[conflictNet][2] or posy != netList[conflictNet][3] or posz != 0):
+                        layoutGrid[posx][posy][posz][0] = -1
+                        if segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 0:
+                            if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == conflictNet and lastMove != 6:
+                                posz = posz + 1
+                                lastMove = 5
+                            elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == conflictNet and lastMove != 5:
+                                posz = posz - 1
+                                lastMove = 6
+                            else:
+                                print(f'Error: Unable to trace Net {i}')
+                                break
+                        elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 1:
+                            if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == conflictNet and lastMove != 2:
+                                posx = posx + 1
+                                lastMove = 1
+                            elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == conflictNet and lastMove != 1:
+                                posx = posx - 1
+                                lastMove = 2
+                            else:
+                                print(f'Error: Unable to trace Net {i}')
+                                break
+                        elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 2:    
+                            if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == conflictNet and lastMove != 4:
+                                posy = posy + 1
+                                lastMove = 3
+                            elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == conflictNet and lastMove != 3:
+                                posy = posy - 1
+                                lastMove = 4
+                            else:
+                                print(f'Error: Unable to trace Net {i}')
+                                break
+                        else:
+                            print(f'Error: Unable to trace Net {i}')
+                            break
+                    ripCount = ripCount + 1
+                    netList[conflictNet][6] = 0 #Mark net as unrouted
+                    segList[conflictNet].clear()  #clear seg list, re add start/end vias to segList and layoutGrid
+                    segList[conflictNet] = [[[netList[conflictNet][0], netList[conflictNet][1], 0], [netList[conflictNet][0], netList[conflictNet][1], 1], 0], #First via from M1 to M2
+                                            [[netList[conflictNet][2], netList[conflictNet][3], 1], [netList[conflictNet][2], netList[conflictNet][3], 0], 0]] #Last via from M2 to M1 
+                    layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][0] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i, 0), conflictNet]
+                    layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][1] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i, 0), conflictNet]
+                    layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][0] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 0, i), -1, conflictNet]
+                    layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][1] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 1, i), -1, conflictNet]
+    return ripCount
 
-for i in range(NET_COUNT):
-    if netList[i][6] == 0:  #If a net failed to route
-        for j in range(2, NUM_LAYERS-6):  #Scan all the layers above the start/end vias
-            if layoutGrid[netList[i][0]][netList[i][1]][j][0] != -1:    #If there's something there
-                conflictNet = layoutGrid[netList[i][0]][netList[i][1]][j][0]
-                print(f'Removing Net {conflictNet}')
-                posx = netList[conflictNet][0]    #step through the whole net and remove each cell from layoutGrid
-                posy = netList[conflictNet][1]
-                posz = 0
-                lastMove = 0
-                while (posx != netList[conflictNet][2] or posy != netList[conflictNet][3] or posz != 0):
-                    layoutGrid[posx][posy][posz][0] = -1
-                    if segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 0:
-                        if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == conflictNet and lastMove != 6:
-                            posz = posz + 1
-                            lastMove = 5
-                        elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == conflictNet and lastMove != 5:
-                            posz = posz - 1
-                            lastMove = 6
-                        else:
-                            print(f'Error: Unable to trace Net {i}')
-                            break
-                    elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 1:
-                        if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == conflictNet and lastMove != 2:
-                            posx = posx + 1
-                            lastMove = 1
-                        elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == conflictNet and lastMove != 1:
-                            posx = posx - 1
-                            lastMove = 2
-                        else:
-                            print(f'Error: Unable to trace Net {i}')
-                            break
-                    elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 2:    
-                        if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == conflictNet and lastMove != 4:
-                            posy = posy + 1
-                            lastMove = 3
-                        elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == conflictNet and lastMove != 3:
-                            posy = posy - 1
-                            lastMove = 4
-                        else:
-                            print(f'Error: Unable to trace Net {i}')
-                            break
-                    else:
-                        print(f'Error: Unable to trace Net {i}')
-                        break
-                netList[conflictNet][6] = 0 #Mark net as unrouted
-                segList[conflictNet].clear()  #clear seg list, re add start/end vias to segList and layoutGrid
-                segList[conflictNet] = [[[netList[conflictNet][0], netList[conflictNet][1], 0], [netList[conflictNet][0], netList[conflictNet][1], 1], 0], #First via from M1 to M2
-                                        [[netList[conflictNet][2], netList[conflictNet][3], 1], [netList[conflictNet][2], netList[conflictNet][3], 0], 0]] #Last via from M2 to M1 
-                layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][0] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 0, i, 0), conflictNet]
-                layoutGrid[segList[conflictNet][0][0][0]][segList[conflictNet][0][0][1]][1] = [conflictNet, 0, netCostCellToEnd(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i), netCostStartToCell(segList[conflictNet][0][0][0], segList[conflictNet][0][0][1], 1, i, 0), conflictNet]
-                layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][0] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 0, i), -1, conflictNet]
-                layoutGrid[segList[conflictNet][1][0][0]][segList[conflictNet][1][0][1]][1] = [conflictNet, 1, netCostCellToEnd(segList[conflictNet][1][0][0], segList[conflictNet][1][0][1], 1, i), -1, conflictNet]
+def aStarRouter():  #This function was AI Generated with Gemini set to 3.1 Pro with the prompt: Here is my code for a VLSI router. Can you make a function I can add after my initial pattern route attempt to try A* routing? 
+    import heapq
+    global layoutGrid, netList, segList
+    
+    routed_count = 0
+    attempt_count = 0
+    
+    for net in range(NET_COUNT):
+        # Only attempt to route nets that haven't been completed yet
+        if netList[net][6] == 0:
+            routeTime = time.perf_counter()
+            attempt_count += 1
+            startX, startY = netList[net][0], netList[net][1]
+            endX, endY = netList[net][2], netList[net][3]
+            
+            # Start and End positions at the top of the M1->M2 vias (z = 1)
+            start_pos = (startX, startY, 1)
+            end_pos = (endX, endY, 1)
+            
+            open_set = []
+            heapq.heappush(open_set, (0, 0, start_pos)) # (f_score, g_score, (x, y, z))
+            
+            came_from = {}
+            g_score = {start_pos: 0}
+            
+            # Heuristic: 3D Manhattan Distance (Prioritizing planar moves over vias)
+            def heuristic(pos):
+                return abs(pos[0] - endX) + abs(pos[1] - endY) + (abs(pos[2] - 1) * 2)
+            
+            path_found = False
+            
+            while open_set:
+                _, current_g, current = heapq.heappop(open_set)
+                
+                if current == end_pos:
+                    path_found = True
+                    break
+                elif time.perf_counter() > routeTime + netList[net][4]* ROUTE_TIME_LIMIT:
+                    print(f'Net {net} took too long to route')
+                    break
 
-patternRouter() 
+                x, y, z = current
+                
+                neighbors = []
+                
+                # Planar moves based on alternating layer direction
+                if z % 2 == 1: 
+                    # Odd index layers (M2, M4...) are Vertical
+                    if y + 1 < GRID_SIZE: neighbors.append(((x, y + 1, z), 1))
+                    if y - 1 >= 0: neighbors.append(((x, y - 1, z), 1))
+                else:          
+                    # Even index layers (M3, M5...) are Horizontal
+                    if x + 1 < GRID_SIZE: neighbors.append(((x + 1, y, z), 1))
+                    if x - 1 >= 0: neighbors.append(((x - 1, y, z), 1))
+                
+                # Via moves (Up/Down)
+                if z < NUM_LAYERS - 1:
+                    neighbors.append(((x, y, z + 1), 2)) # Up
+                if z > 1: # Restrict going down to z=0 (M1) to keep routing on M2+
+                    neighbors.append(((x, y, z - 1), 2)) # Down
+                    
+                for neighbor_pos, move_cost in neighbors:
+                    nx, ny, nz = neighbor_pos
+                    
+                    # Validate cell: It must be empty (-1) or already belong to this net
+                    grid_val = layoutGrid[nx][ny][nz][0]
+                    if grid_val != -1 and grid_val != net:
+                        continue
+                        
+                    tentative_g = current_g + move_cost
+                    
+                    if neighbor_pos not in g_score or tentative_g < g_score[neighbor_pos]:
+                        came_from[neighbor_pos] = current
+                        g_score[neighbor_pos] = tentative_g
+                        f_score = tentative_g + heuristic(neighbor_pos)
+                        heapq.heappush(open_set, (f_score, tentative_g, neighbor_pos))
+            
+            # If a path was found, reconstruct and commit it
+            if path_found:
+                # Backtrack to build the coordinate path
+                path = []
+                curr = end_pos
+                while curr in came_from:
+                    path.append(curr)
+                    curr = came_from[curr]
+                path.append(start_pos)
+                path.reverse()
+                
+                # Convert the individual cell steps into contiguous segments
+                if len(path) > 1:
+                    seg_start = 0
+                    active_dir = -1 # 0: via, 1: horizontal, 2: vertical
+                    
+                    for i in range(1, len(path)):
+                        dx = path[i][0] - path[i-1][0]
+                        dy = path[i][1] - path[i-1][1]
+                        dz = path[i][2] - path[i-1][2]
+                        
+                        if dz != 0: current_dir = 0
+                        elif dx != 0: current_dir = 1
+                        else: current_dir = 2
+                            
+                        if active_dir == -1:
+                            active_dir = current_dir
+                            
+                        # When the direction changes, commit the previous segment to the layout
+                        if current_dir != active_dir:
+                            p_start = path[seg_start]
+                            p_end = path[i-1]
+                            
+                            if active_dir == 0:
+                                # Break multi-layer via jumps into individual 1-layer steps
+                                for z_step in range(abs(p_end[2] - p_start[2])):
+                                    z1 = p_start[2] + z_step * (1 if p_end[2] > p_start[2] else -1)
+                                    z2 = z1 + (1 if p_end[2] > p_start[2] else -1)
+                                    addVia(net, p_start[0], p_start[1], z1, z2)
+                            elif active_dir == 1:
+                                addHori(net, p_start[0], p_end[0], p_start[1], p_start[2])
+                            elif active_dir == 2:
+                                addVert(net, p_start[0], p_start[1], p_end[1], p_start[2])
+                                
+                            seg_start = i - 1
+                            active_dir = current_dir
+                            
+                    # Commit the final segment of the net
+                    p_start = path[seg_start]
+                    p_end = path[-1]
+                    if active_dir == 0:
+                        for z_step in range(abs(p_end[2] - p_start[2])):
+                            z1 = p_start[2] + z_step * (1 if p_end[2] > p_start[2] else -1)
+                            z2 = z1 + (1 if p_end[2] > p_start[2] else -1)
+                            addVia(net, p_start[0], p_start[1], z1, z2)
+                    elif active_dir == 1:
+                        addHori(net, p_start[0], p_end[0], p_start[1], p_start[2])
+                    elif active_dir == 2:
+                        addVert(net, p_start[0], p_start[1], p_end[1], p_start[2])
+                        
+                print(f"Routed Net {net} using A*")
+                routed_count += 1
+            else:
+                print(f"A* failed to find a path for Net {net}")
+                
+    if attempt_count > 0:
+        return attempt_count, routed_count
+    else:
+        return 0, 0
+      
+
+#Start routing
+startTime = time.perf_counter()     #Start timer
+for i in range(NET_COUNT):  #Fill the empty lists with first and last segment as well as a value to indicate type of segment
+    segList[i] = [[[netList[i][0], netList[i][1], 0], [netList[i][0], netList[i][1], 1], 0], #First via from M1 to M2
+                [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
+for i in range(NET_COUNT):  #Manually add start and end vias for each net to layoutGrid
+    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 0, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 0, i, 0), i]
+    layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1] = [i, 0, netCostCellToEnd(segList[i][0][0][0], segList[i][0][0][1], 1, i), netCostStartToCell(segList[i][0][0][0], segList[i][0][0][1], 1, i, 0), i]
+    layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 0, i), -1, i]
+    layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1] = [i, 1, netCostCellToEnd(segList[i][1][0][0], segList[i][1][0][1], 1, i), -1, i]
+
+patternRouter() #Pattern route what you can
+patternTime = time.perf_counter() - startTime
+
+if tallyRouted() < NET_COUNT:
+    aStarAttempts1, aStartRouted1 = aStarRouter()   #A* the rest
+    aStarTime1 = time.perf_counter() - patternTime - startTime
+    for i in range(NUM_ITERATIONS):
+        ripCount1 = ripperUpper()
+        ripTime1 = time.perf_counter() - aStarTime1 - patternTime - startTime
+        aStarAttempts2, aStartRouted2 = aStarRouter()
+        aStarTime2 = time.perf_counter() - ripTime1 - patternTime - aStarTime1 - startTime
 
 #Maybe once it finishes it's first pass, it rips up anything that's blocking an unrouted start/end via on any layer.
 #I don't want to prevent the first pass from covering vias since it might prevent good routes. Try it though, maybe the tests are built weird
@@ -833,23 +997,18 @@ patternRouter()
 #Need to check locations for validity before doing addSegment, and the last segment placed must be one that overlaps with the end via
 #All the values in layout are usable for search as long as that first net value is left at -1 until final placement
 #The cost Start to Cell functiton depends on a continuous path of sequential and properly oriented segments including the target cell
-#Need to find a way to trace that temp net value back to the last placed segment, read its value, then add the distance between
-
-#start with patern router for shorts. Try all the orientations for that length (line, L, and 7. Z might be too much) on M2 and M3 (lines on both, L/7 span both layers as is)
-#Stat with length of 1 and lock any nets you can complete with this on M2. During the search, note the next lowest HPWL
-#On the next size step, you'll need to verify that nothing is obstructing the path
-#After shorts are done, do for longs. A* what's left. If I add rip up later, don't remove M1/M2 vias
-
-#Optimize by only calculating predicted and actual cost on segment end points
 
 #Compute results
-routedNets = 0                          #Find what % of nets were routed
-for i in range(NET_COUNT):
-    if netList[i][6] != 0:
-        routedNets = routedNets + 1
+routedNets = tallyRouted()
 finalCost = sum(entry[6] for entry in netList)  #Find the final cost
-print(f'vertAttempt = {vertAttempt}, vertFail = {vertFail}, horiAttempt = {horiAttempt}, horiFail = {horiFail}, LAttempt = {LAttempt}, LFail = {LFail}') #Print summary of unrouted nets
-print(f'Routed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds')  #Print % of nets that were routed and how long it took
+print(f'\nPattern router completed {vertAttempt - vertFail}/{vertAttempt} vertical line routes, {horiAttempt- horiFail}/{horiAttempt} horizontal line routes, and {LAttempt-LFail}/{LAttempt} L routes in {(patternTime):.3f} seconds') #Print summary of unrouted nets
+if (vertFail + horiFail + LFail) != 0:
+    print(f'A* pass 1 completed {aStartRouted1}/{aStarAttempts1} of the remaining routes in {aStarTime1:.3f} seconds')
+    if aStarAttempts1 - aStartRouted1 != 0:
+        for i in range(NUM_ITERATIONS):
+            print(f'{ripCount1} nets were removed in {ripTime1:.3f} seconds')
+            print(f'A* pass 2 completed {aStartRouted2}/{aStarAttempts2} of the remaining routes in {aStarTime2:.3f} seconds')
+print(f'Router completed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds\n')  #Print % of nets that were routed and how long it took
 
 #Check results for validity
 print(f'Validating results...')
