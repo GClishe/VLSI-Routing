@@ -1,0 +1,75 @@
+Notes
+
+netList[net][data]  0=Start Pin X
+                    1=Start Pin Y      
+                    2=End Pin X
+                    3=End Pin Y
+                    4=HPWL
+                    5=Locked 0=unlocked 1=locked
+                    6=Final cost 0=unrouted
+
+
+segList[net][seg][0=start, 1=end, 2=dir (0=via, 1=hori, 2=vert)][0=x, 1=y, 2=z]
+
+layoutGrid[x][y][z][data]   0=net
+                            1=seg (prioratize start of newer seg in overlaps)
+                            2=historical value
+
+Added time out of 0.025 sec/HPWL
+Took 1880 sec for initial route, then ripped up 46, retried 114, and got 54 for a total of 8 more in 150 sec.
+Final result was 99.8% in 2097 sec with a cost of 1778742
+
+doing 0.01 only saved another 30 seconds and  missed a couple nets
+
+0.015 sec got all the same results. Execution time for the pattern and A* were 1960 sec, and the 2nd A* went down to 51
+Total time 2011 sec, but with the 2nd pass so much faster...
+
+Increasing iterations with this rip up and route system does nothing.
+
+Disabling suboptimal patterns balloned run time and slightly reduced route count. More iterations still does nothing
+
+New full path rup up and historical heuristic helped a bunch. With 5 reroutes:
+75 left in 2837 sec, 11 left in 1085 sec, 12 left in 428 sec, 12 left in 363 sec, 13 left in 348 sec, 13 left in 388 sec
+Final was 99.957% at 1775861 in 5480 sec. Best of run was 99.963% in 3923 sec. One Reroute was good, subsequent was bad
+With Rtest_1000_25000 4 reroutes got to 1 unrouted, the 5th did nothing
+
+Disabling suboptimal patterns, additional layers, as well as patterns entirely makes it really slow and usually doesn't change it too far for better or worse
+
+Note that the ripper upper clears a path on M2 and M3 and the M2 clears are causing error messages and aren't completing any routes, should probaby do M3 M4 instead. Also need to add the intersection via and clear both L and 7 route. 
+
+Doing subsequent A* starting with the ones left unrouted last time instead of iterating through all nets including ripped ones helps a lot. Pattern took 25 seconds to 22573 nets, initial A* took 2825s and got another 7352, ripup 1 took 0.252 sec to removed 1019 nets, A*1 took 417 seconds to get 1090 routed (2 left). Subsequent routes just make it worse.
+3268 seconds, 1785621 cost, 99.993% routed after first reroute
+
+Added M3/M4 L with intersection via rip up. The same 3 kept failing even after clearing a perfect route. Either my route is messed up, or these guys are really long and need more time. Oh yeah they're stupid long. I think time is O^2 that might do it or adaptive time per iteration. 
+25 second pattern got 22573, 2863 second A* got another 7352 (75 left), ripped up 970 nets in 0.42 seconds, A* got 1041 (3 left) then sat in a loop where those same 3 timed out. At the first reroute it was at 99.99% routed in 3651 seconds with a cost of 1785276
+
+Just for fun, run with 15 sec per HPWL and see what it does. 25 second pattern gets 22573, A* takes 5667 seconds to get 7359, it rips up 462 in 0.25 seconds, A* routes 529 in 463 seconds (1 left), it rips up 4 nets in 0.04 seconds, and A* routes 5 in 3.4 seconds. Final result 100% 1788391 in 6160 seconds
+
+At 0.025 sec per HPWL it got the same results just at 25, 2900, 0.25, 356, 0.04, 3 seconds totaling 3285 seconds
+At 0.020 sec per HPWL it still completed but took longer and did worse. 
+
+
+Optimize for more speed, then give it the time it wants with squared time or something. Maybe tune historical weight and see if quality improves. If fast enough try only optimal pattern routes. Try pattern routing on reroutes to avoid infinite time outs and give super long nets an optimal route. Or just make timeouts ultra long on reroutes
+
+Reval_100_400: 100%, 4506, 0.013 seconds, pure pattern routes
+Reval_500_5000: 100%, 61162, 0.208 seconds, pure pattern routes
+Reval_1000_20000: 100%, 245144, 0.776 seconds, pure pattern routes
+Reval_1000_30000: 100%, 1788391, 3285 seconds, pattern 22573 in 25, A* 7359 in 2900, rip up 462 in 0.25, A* 529 in 356, rip up 4 in 0.04, A* 5 in 3.4
+Reval_1000_40000: 100%, 2413720, 6449 seconds, pattern 27466 in 39.49, A* 12320 in 5045, rip up 1769 in 0.689, A* 1976 in 1359, rip up 14 in 0.051, A* 21 in 4.133
+
+netlist_100_100: 100%, 10500, 0.013 seconds, pure pattern routes
+Rtest_100_400: 100%, 4506, 0.013 seconds, pure pattern routes
+Rtest_100_1000: 100%, 10513, 0.030 seconds, pure pattern routes
+Rtest_100_250: 100%, 7219, 0.396 seconds, pattern 199 in 0.027, A* 51 in 0.369
+Rtest_100_500: 100%, 15301, 2.655 seconds, pattern 382 in 0.061, A* 167 in 2.309, rip up 27 in 0.004, A* 32 in 0.279
+Rtest_500_5000: 100%, 61162, 0.191 seconds, pure pattern routes
+Rtest_500_6000: 100%, 254443, 150.67 seconds, pattern 4783 in 1.773, A* 1208 in 130.57, Rip up 86 in 0.033, A* 95 in 18.28
+Rtest_1000_20000: 100%, 245144, 0.781 seconds pure pattern routes
+Rtest_1000_25000: 100%, 1471027, 2145.5 seconds, pattern 19821 in 18.71, A* 5149 in 1929, rip up 174 in 0.134, A* 203 in 197.7, rip up 4 in 0.03, A* 5 in 0.045
+Rtest_1500_45000: 100%, 551397, 1.881, pure pattern routes
+Rtest_1500_50000: 99.998%, 3787098, 13583, pattern 40561 in 60.36, A* 9393 in 11336, rip up 750 in 0.532, A* 792 in 1672, rip up 95 in 0.122, A* 98 in 337.8 should have finished here but net 47801 kept timing out and rerouting
+
+
+
+
+

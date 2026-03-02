@@ -3,16 +3,16 @@
 #
 #
 
-#User parameters
-DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
+#User parameter
+DATA_NAME = 'Reval_1500_40000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
 NUM_LAYERS = 9                          #Set the number of layers available
 MAX_PATTERN_SIZE = -1                   #Set the maximum HPWL that pattern routing should be used for. Set to 0 to disable pattern routing, and -1 to automatically scale it to the largest HPWL
 ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
 SUBOPTIMAL_PATTERNS = True              #Allow patterns to extend past the first layer they are allowed to be on, as well as enabling detouring patterns like U and Z (not implimented). If disabled, ADDITIONAL_PATTERN_LAYERS won't do anything
-ROUTE_TIME_LIMIT = 0.015                #Seconds to allow for an A* attempt per HPWL
+ROUTE_TIME_LIMIT = 0.025                #Seconds to allow for an A* attempt per HPWL
 RIPUP_MAX_LAYER = 4                     #After first routing attempt, if there are still nets unrouted, it will clear any routes in the area above their start/end pins. How high should this go. Ex 3 = rip up M3
 NUM_ITERATIONS = 5                      #Number of times to try riping up and rerouting. This routing will stop early if it completes
-HISTORY_PENALTY = 2.0                   # Weight of the historical penalty. Adjust between 1.0 and 5.0 for tuning.
+HISTORY_PENALTY = 2.0                   #Weight of the historical penalty. Adjust between 1.0 and 5.0 for tuning.
 GENERATE_GRAPHS = True                  #Enables generation of 3D graphs to show final route
 SHOW_GRAPH = True                       #Enables an interactive version of the graph to appear when finished
 
