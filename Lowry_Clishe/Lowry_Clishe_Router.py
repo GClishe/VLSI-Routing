@@ -1,10 +1,27 @@
-#
-#
-#
-#
+
+#Place the folders containing the data sets to route in the same directory as this script. Ensure they use the default names of "Reval_netlists-2" and "Rtest_netlists"
+#Create result folders called "Lowry_Clishe_X" where X is the original folder name
+#You can select what data set you want to route by entering the name in user parameters
+#The option to change layer count is there, but it is unknown what happens if you change it from 9. By default M1 is reserved, M2,4, 6, 8 are vertical, and M3, 5, 7, 9 are horizontal
+#This router has functions for pattern routing, a fast, but not very adaptable method. This is here as a first pass to route easy nets before the more complex A* algorithim is used
+#It can be set to only use the first few layers to leave more room for the A* rotuer, or even to only route if the optimal pattern route is available
+#It can also be set to only route up to a max pattern size to save time since it usually can't do the longer routes due to congestion
+#It is sugested to leave it at -1 which allows it to try all nets by setting the max length to that of the longest net
+#Even though long pattern routes are slower, they're still faster than A* routes. Setting max size to 0 disabled the pattern router
+#Generally limiting it to optimal routes somewhat helps cost but really hurts speed, so it's recomended to let the pattern router do all it can
+#The A* portion takes longer but can produce complex routes to weave through congestion
+#Usually when it fails, the net it's trying to route takes forever, so there is a timeout function to try and save some time on routes that are lost causes.
+#This value is not a direct time, but is a scalar that is later processed into a time based on how long the route should take
+#It's recomended to tune this value as low as it can go without changing the results of a given data set, as it can get stuck retrying and getting cut off when routing longer nets
+#Once A* is complete, it can still fail to make some routes, so it can rip up a path for an L route on M3 and M4 (not M2 since it will likely get blocked by start / end vias)
+#Once a path is clear, the previously unrouted paths are routed, then the ripped up ones are rebuilt. You can change how many times this can happen before giving up
+#This process can end up casuing new blockages, so it remembers when routes are removed from a cell and discourages routing through them. The strength of this effect can be tuned with history penalty
+#Older version of the rip up function just cleared a path above the start and end pins rather than a whole route, so you can still control that, but it's recomended to leave it at 4 since that's what is needed for the M3/M4 L pattern
+#This script can also generate graphs of the completed routes. If enabled it will save a top, front, side, and isometric view.
+#It can also create an interactive graph if desired, but it gets unusably slow with grid sizes above 500
 
 #User parameter
-DATA_NAME = 'Reval_1500_40000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
+DATA_NAME = 'Reval_1000_30000'          #Name of netlist file. Make sure original folder names are used and that result folders exist
 NUM_LAYERS = 9                          #Set the number of layers available
 MAX_PATTERN_SIZE = -1                   #Set the maximum HPWL that pattern routing should be used for. Set to 0 to disable pattern routing, and -1 to automatically scale it to the largest HPWL
 ADDITIONAL_PATTERN_LAYERS = True        #Allow pattern router to use layers M2-M9 when enabled, or only M2-M5 when disabled
@@ -187,7 +204,7 @@ def patternRouter():                            #Attempt pattern routing on unro
                                 addVia(i, x1, y1, 3, 2)
                                 addVia(i, x1, y1, 2, 1)         
     #If I come back to it, I should lock the optimal pattern routes
-    #maybe try X spaces to left/right U routes. Try below M5 before doing above M5 straights. Maybe even do M1 streight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
+    #maybe try X spaces to left/right U routes. Try U's below M5 before doing above M5 straights. Maybe even do M1 straight, M1 U, M2 streight, M2 U... and have U check with a detour up to the via cost of going to the next layer
     #Or try staggared routes
                             elif ADDITIONAL_PATTERN_LAYERS:                 #If enabled, try higher layers before giving up
                                 if segOpen(i, x0, y0, 3, 4, 0) and segOpen(i, x0, y0, 4, 5, 0) and segOpen(i, x1, y1, 5, 4, 0) and segOpen(i, x1, y1, 4, 3, 0): #If M4 vertical line fails, Check via from M4 to M5 and M5 to M6 at start and M6 to M5 and M5 to M4 at end
@@ -802,7 +819,7 @@ def ripperUpper() -> int:                                           #Function to
                     print(f'Error: Unable to trace Net {i}')        #If it's a horizontal segment and you can't go left or right, something's gone wrong
                     break                                           #Abort
             elif segList[conflictNet][layoutGrid[posx][posy][posz][1]][2] == 2: #If the segment this cell belongs to is vertical
-                if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == conflictNet and lastMove != 4:   #See  if going up is allowed, and that the last move wasn't going down
+                if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == conflictNet and lastMove != 4:   #See if going up is allowed, and that the last move wasn't going down
                     posy = posy + 1                                 #Go up
                     lastMove = 3                                    #Record this move for next time
                 elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == conflictNet and lastMove != 3:    #See if going down is allowed, and that the last move wasn't going up
@@ -831,7 +848,7 @@ def ripperUpper() -> int:                                           #Function to
 ########################################################################
 #This function was AI Generated with Gemini set to 3.1 Pro with the prompt: Here is my code for a VLSI router. Can you make a function I can add after my initial pattern route attempt to try A* routing? 
 #It's since been lightly modified as stuff's changed but it's largly an AI generated mess to look at and I haven't analyzed it to know if what it's doing makes sence or is any good, I just know it works
-#Mainly I made it track nets that it failed to route and have it route those first on the next iteration. I made a sub function to stream line the two passes but it's hardly elegant
+#Mainly I made it track nets that it failed to route and have it route those first on the next iteration. I made a sub function to stream line the two passes but it's hardly elegant. I added a time limit
 #Might look into routing from small to large or something like the pattern router
 def aStarRouter():  
     global layoutGrid, netList, segList
@@ -995,11 +1012,11 @@ def aStarRouter():
 ##############################################################      
 
 #Start routing
-startTime = time.perf_counter()     #Start timer
-for i in range(NET_COUNT):  #Fill the empty lists with first and last segment as well as a value to indicate type of segment
+startTime = time.perf_counter()                                                         #Start timer
+for i in range(NET_COUNT):                                                              #Fill the empty lists with first and last segment as well as a value to indicate type of segment
     segList[i] = [[[netList[i][0], netList[i][1], 0], [netList[i][0], netList[i][1], 1], 0], #First via from M1 to M2
                 [[netList[i][2], netList[i][3], 1], [netList[i][2], netList[i][3], 0], 0]] #Last via from M2 to M1 
-for i in range(NET_COUNT):  #Manually add start and end vias for each net to layoutGrid
+for i in range(NET_COUNT):                                                              #Manually add start and end vias for each net to layoutGrid
     layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0][0] = i
     layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][0][1] = 0
     layoutGrid[segList[i][0][0][0]][segList[i][0][0][1]][1][0] = i
@@ -1008,132 +1025,127 @@ for i in range(NET_COUNT):  #Manually add start and end vias for each net to lay
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][0][1] = 1
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1][0] = i
     layoutGrid[segList[i][1][0][0]][segList[i][1][0][1]][1][1] = 1
-
-if MAX_PATTERN_SIZE != 0:
-    horiAttempt, horiFail, vertAttempt, vertFail, LAttempt, LFail = patternRouter() #Pattern route what you can
-    patternTime = time.perf_counter() - startTime
-else: 
-    horiAttempt = horiFail = vertAttempt = vertFail = LAttempt = LFail = NET_COUNT
-    patternTime = 0
-
-if tallyRouted() < NET_COUNT:
-    aStarAttempts = np.zeros((NUM_ITERATIONS + 1), dtype = np.int32)
-    aStartRouted = np.zeros((NUM_ITERATIONS + 1), dtype = np.int32)
-    aStarTime = np.zeros((NUM_ITERATIONS + 1), dtype = np.float32)
-    aStarAttempts[0], aStartRouted[0], failedNets = aStarRouter()   #A* the rest
-    print(failedNets)
-    aStarTime[0] = time.perf_counter() - patternTime - startTime
-    if NUM_ITERATIONS > 0 and tallyRouted() < NET_COUNT:
-        ripCount = np.zeros((NUM_ITERATIONS), dtype = np.int32)
-        ripTime = np.zeros((NUM_ITERATIONS + 1), dtype = np.float32)
-        for i in range(NUM_ITERATIONS):
-            if tallyRouted() < NET_COUNT:
-                ripCount[i] = ripperUpper()
-                ripTime[i + 1] = time.perf_counter() - patternTime - startTime
-                for j in range(i + 1):
+if MAX_PATTERN_SIZE != 0:                                                               #If pattern routing is enabled
+    horiAttempt, horiFail, vertAttempt, vertFail, LAttempt, LFail = patternRouter()     #Pattern route what you can
+    patternTime = time.perf_counter() - startTime                                       #Mark how long it took
+else:                                                                                   #If it's disabled
+    horiAttempt = horiFail = vertAttempt = vertFail = LAttempt = LFail = NET_COUNT      #Set all its telemetry values to NET_COUNT so it doesn't break (yeah this could be done better but it's fine)
+    patternTime = 0                                                                     #Mark that pattern routing took 0 seconds
+if tallyRouted() < NET_COUNT:                                                           #If not everything is routed
+    aStarAttempts = np.zeros((NUM_ITERATIONS + 1), dtype = np.int32)                    #Create an array to track attempted nets per A* attempt
+    aStartRouted = np.zeros((NUM_ITERATIONS + 1), dtype = np.int32)                     #Create an array to track routed nets per A* attempt
+    aStarTime = np.zeros((NUM_ITERATIONS + 1), dtype = np.float32)                      #Create an array to track time per A* attempt
+    aStarAttempts[0], aStartRouted[0], failedNets = aStarRouter()                       #Run initial A* pass
+    print(failedNets)                                                                   #Print nets that were not routed during A*
+    aStarTime[0] = time.perf_counter() - patternTime - startTime                        #Record time for initial A* pass
+    if NUM_ITERATIONS > 0 and tallyRouted() < NET_COUNT:                                #If there are still unrouted nets, and it is configured to do some rip up / reroute iterations
+        ripCount = np.zeros((NUM_ITERATIONS), dtype = np.int32)                         #Create an array to track how many nets were ripped up on each iteration
+        ripTime = np.zeros((NUM_ITERATIONS + 1), dtype = np.float32)                    #Create an array to track how long it took to do each rip up pass
+        for i in range(NUM_ITERATIONS):                                                 #Repeat the following once for each iteration
+            if tallyRouted() < NET_COUNT:                                               #Make sure there are still unrouted nets so it can end before max iterations are hit
+                ripCount[i] = ripperUpper()                                             #Rip up nets that collide with the ideal M3/M4 pattern for unrouted paths
+                ripTime[i + 1] = time.perf_counter() - patternTime - startTime          #Record how long it took
+                for j in range(i + 1):                                                  #Some janky way to subtract out times of prior runs to get how long this one took
                     ripTime[i + 1] = ripTime[i + 1] - aStarTime[j] - ripTime[j]
-                aStarAttempts[i + 1], aStartRouted[i + 1], failedNets = aStarRouter()
-                print(failedNets)
-                aStarTime[i + 1] = time.perf_counter() - patternTime - startTime
-                for j in range(i + 1):
+                aStarAttempts[i + 1], aStartRouted[i + 1], failedNets = aStarRouter()   #Do an A* pass that starts with the previously unrouted nets then rebuilds the riped up ones
+                print(failedNets)                                                       #Print any nets it still didn't route
+                aStarTime[i + 1] = time.perf_counter() - patternTime - startTime        #Record how long it took
+                for j in range(i + 1):                                                  #More janky time correction stuff
                     aStarTime[i + 1] = aStarTime[i + 1] - aStarTime[j] - ripTime[j + 1]
-
+                
+#Things to remember while routing:
 #The addSegment functions are dumb. They will place the segment no matter what, and will complete the net if anything in the net touches the end via
 #Need to check locations for validity before doing addSegment, and the last segment placed must be one that overlaps with the end via
 #All the values in layout are usable for search as long as that first net value is left at -1 until final placement
 #The cost Start to Cell functiton depends on a continuous path of sequential and properly oriented segments including the target cell
 
 #Compute results
-routedNets = tallyRouted()
+routedNets = tallyRouted()                      #Find final number of routed nets
 finalCost = sum(entry[6] for entry in netList)  #Find the final cost
-print('')
-if MAX_PATTERN_SIZE != 0:
+print('')                                       #Skip a line
+if MAX_PATTERN_SIZE != 0:                       #If pattern routing happened, report about it
     print(f'Pattern router completed {vertAttempt - vertFail}/{vertAttempt} vertical line routes, {horiAttempt- horiFail}/{horiAttempt} horizontal line routes, and {LAttempt-LFail}/{LAttempt} L routes in {(patternTime):.3f} seconds') #Print summary of unrouted nets
-if (vertFail + horiFail + LFail) != 0:
+if (vertFail + horiFail + LFail) != 0:          #If pattern routing didnt happen or wasn't succesful, report about A* routing
     print(f'A* pass 1 completed {aStartRouted[0]}/{aStarAttempts[0]} of the remaining routes in {aStarTime[0]:.3f} seconds')
-    if aStarAttempts[0] - aStartRouted[0] != 0:
+    if aStarAttempts[0] - aStartRouted[0] != 0: #If the initial A* route wasn't successful, report about the rip up / re route iterations
         for i in range(NUM_ITERATIONS):
             print(f'{ripCount[i]} nets were removed in {ripTime[i + 1]:.3f} seconds')
             print(f'A* pass {i + 2} completed {aStartRouted[i + 1]}/{aStarAttempts[i + 1]} of the remaining routes in {aStarTime[i + 1]:.3f} seconds')
-print(f'Router completed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds\n')  #Print % of nets that were routed and how long it took
+print(f'Router completed {100*routedNets/NET_COUNT}% of nets with a cost of {finalCost} in {(time.perf_counter() - startTime):.3f} seconds\n')  #Print final results
 
 #Check results for validity
 print(f'Validating results...')
-cost = 0
-for i in range(NET_COUNT):
-    netCost = 0
-    for j in range(len(segList[i])):
-        netCost = 0
-        if segList[i][j][2] == 0:   #For vias
-            if netList[i][6] != 0:
-                cost = cost + 2
-            if segList[i][j][0][0] != segList[i][j][1][0] or segList[i][j][0][1] != segList[i][j][1][1]:
+cost = 0                                #Set initial cost to 0
+for i in range(NET_COUNT):              #Cycle through each net
+    for j in range(len(segList[i])):    #And each segment in that net
+        if segList[i][j][2] == 0:       #For vias
+            if netList[i][6] != 0:      #If it's routed
+                cost = cost + 2         #Add 2 cost
+            if segList[i][j][0][0] != segList[i][j][1][0] or segList[i][j][0][1] != segList[i][j][1][1]:    #Make sure it's acutally a via
                 print(f'Error: Via on Net {i}, Segment{j} did not go the expected direction')
-            if abs(segList[i][j][0][2] - segList[i][j][1][2]) != 1:
+            if abs(segList[i][j][0][2] - segList[i][j][1][2]) != 1:                                         #Make sure the via is only crossing one layer
                 print(f'Error: Via on Net {i}, Segment{j} is not the correct length')
-        elif segList[i][j][2] == 1: #For horizontal segments
-            if netList[i][6] != 0:
-                cost = cost + abs(segList[i][j][0][0] - segList[i][j][1][0])
-            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][1] != segList[i][j][1][1]:
+        elif segList[i][j][2] == 1:     #For horizontal segments   
+            if netList[i][6] != 0:      #If the net is routed
+                cost = cost + abs(segList[i][j][0][0] - segList[i][j][1][0])                                #Add this segment's length as cost
+            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][1] != segList[i][j][1][1]:    #Make sure it's actually a horizontal segment
                 print(f'Error: Horizontal on Net {i}, Segment{j} did not go the expected direction')
-        elif segList[i][j][2] == 2: #For vertical segments
-            if netList[i][6] != 0:
-                cost = cost + abs(segList[i][j][0][1] - segList[i][j][1][1])
-            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][0] != segList[i][j][1][0]:
+        elif segList[i][j][2] == 2:     #For vertical segments
+            if netList[i][6] != 0:      #If the net is routed
+                cost = cost + abs(segList[i][j][0][1] - segList[i][j][1][1])                                #Add this segment's length as cost
+            if segList[i][j][0][2] != segList[i][j][1][2] or segList[i][j][0][0] != segList[i][j][1][0]:    #Make sure it's actually a vertical segment
                 print(f'Error: Vertical on Net {i}, Segment{j} did not go the expected direction')
-        else: 
+        else:                                                                                               #Error if the reported direction isn't even real
             print(f'Error: Invalid segment direction on Net {i}, Segment{j}')
-        if j != len(segList[i]) - 1 and netList[i][6] != 0: #If it's not the last segment and the net is routed
-            if segList[i][j][1] != segList[i][j+1][0]:      #Make sure the end of this one matches the start of the next
+        if j != len(segList[i]) - 1 and netList[i][6] != 0:                                                 #If it's not the last segment and the net is routed
+            if segList[i][j][1] != segList[i][j+1][0]:                                                      #Make sure the end of this one matches the start of the next
                 print(f'End of curr seg {segList[i][j][1]} Start of next seg {segList[i][j+1][0]}')
                 print(f'Error: The end of Net {i}, Segment {j} does not match the start of Segment {j + 1}')
-    cost = netCost + cost
-    if netList[i][6] != 0:
-        posx = netList[i][0]
+    if netList[i][6] != 0:                                                                                  #Now that each segment in segList is checked, go back to the whole net level and look at routed nets on LayoutGrid
+        posx = netList[i][0]                                                                                #Set starting position to the starting pin of the net
         posy = netList[i][1]
         posz = 0
-        lastMove = 0
-        while (posx != netList[i][2] or posy != netList[i][3] or posz != 0):
-            if segList[i][layoutGrid[posx][posy][posz][1]][2] == 0:
-                if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == i and lastMove != 6:
-                    posz = posz + 1
-                    lastMove = 5
-                elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == i and lastMove != 5:
-                    posz = posz - 1
-                    lastMove = 6
-                else:
-                    print(f'Error: Unable to trace Net {i}')
-                    break
-            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 1:
-                if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == i and lastMove != 2:
-                    posx = posx + 1
-                    lastMove = 1
-                elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == i and lastMove != 1:
-                    posx = posx - 1
-                    lastMove = 2
-                else:
-                    print(f'Error: Unable to trace Net {i}')
-                    break
-            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 2:    
-                if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == i and lastMove != 4:
-                    posy = posy + 1
-                    lastMove = 3
-                elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == i and lastMove != 3:
-                    posy = posy - 1
-                    lastMove = 4
-                else:
-                    print(f'Error: Unable to trace Net {i}')
-                    break
-            else:
-                print(f'Error: Unable to trace Net {i}')
-                break
-if cost != finalCost:
-    print(f'Error: calculated cost was {finalCost}, but verrified cost was {cost}')
+        lastMove = 0                                                                                        #Set initial value of last move to an unused default
+        while (posx != netList[i][2] or posy != netList[i][3] or posz != 0):                                #Start at starting pin, loop unitl you get to the end pin
+            if segList[i][layoutGrid[posx][posy][posz][1]][2] == 0:                                         #If the segment this cell belongs to it a via
+                if NUM_LAYERS > posz + 1 and layoutGrid[posx][posy][posz + 1][0] == i and lastMove != 6:    #See if going up a layer is allowed, and that the last move wasn't going down a layer
+                    posz = posz + 1                                                                         #Go up a layer
+                    lastMove = 5                                                                            #Record this move for next time
+                elif 0 <= posz - 1 and layoutGrid[posx][posy][posz - 1][0] == i and lastMove != 5:          #See if going down a layer is allowed, and that the last move wasn't going up a layer
+                    posz = posz - 1                                                                         #Go down a layer
+                    lastMove = 6                                                                            #Record this move for next time
+                else:                                                                                       #If it's a via and you can't go up or down, something's gone wrong
+                    print(f'Error: Unable to trace Net {i}')                                                #Print error
+                    break                                                                                   #Abort
+            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 1:                                       #If the segment this cell belongs to is horizontal
+                if GRID_SIZE > posx + 1 and layoutGrid[posx + 1][posy][posz][0] == i and lastMove != 2:     #See if going right is allowed, and that the last move wasn't going left
+                    posx = posx + 1                                                                         #Go right
+                    lastMove = 1                                                                            #Record this move for next time
+                elif 0 <= posx - 1 and layoutGrid[posx - 1][posy][posz][0] == i and lastMove != 1:          #See if going left is allowed, and that the last move wasn't going right
+                    posx = posx - 1                                                                         #Go Left
+                    lastMove = 2                                                                            #Record this move for next time
+                else:                                                                                       #If it's a horizontal segment and you can't go left or right, something's gone wrong
+                    print(f'Error: Unable to trace Net {i}')                                                #Print error
+                    break                                                                                   #Abort
+            elif segList[i][layoutGrid[posx][posy][posz][1]][2] == 2:                                       #If the segment this cell belongs to is vertical
+                if GRID_SIZE > posy + 1 and layoutGrid[posx][posy + 1][posz][0] == i and lastMove != 4:     #See if going up is allowed, and that the last move wasn't going down
+                    posy = posy + 1                                                                         #Go up 
+                    lastMove = 3                                                                            #Record this move for next time
+                elif 0 <= posy - 1 and layoutGrid[posx][posy - 1][posz][0] == i and lastMove != 3:          #See if going down is allowed, and that the last move wasn't going up
+                    posy = posy - 1                                                                         #Go down
+                    lastMove = 4                                                                            #Record this move for next time
+                else:                                                                                       #If it's a vertical segment and you can't go up or down, something's wrong
+                    print(f'Error: Unable to trace Net {i}')                                                #Print error
+                    break                                                                                   #Abort
+            else:                                                                                           #The segment isn't a via, horizontal, or vertical, something is wrong
+                print(f'Error: Unable to trace Net {i}')                                                    #Print error
+                break                                                                                       #Abort
+if cost != finalCost:                                                                                       #Make sure this segment tracing cost method matches the adding reported net cost method
+    print(f'Error: calculated cost was {finalCost}, but verrified cost was {cost}')                         #If not print an error
 
 #Format and export results
 print(f"Exporting reults to ./Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}.py ...")
-
-output = {                              #Create output data structure, add grid size and final cost
+output = {                                  #Create output data structure, add grid size and final cost
     'meta': {
         'grid_size': GRID_SIZE,
         'layer_directions': {
@@ -1143,53 +1155,49 @@ output = {                              #Create output data structure, add grid 
     'nets': {
     }
 }
-
-for i in range(1, NUM_LAYERS):           #Populate layer information
-    if i % 2 == 0:
+for i in range(1, NUM_LAYERS):              #Populate layer information
+    if i % 2 == 0:                          #Mark odd layers (even index) as horizontal
         output['meta']['layer_directions'][f'M{i + 1}'] = 'H'
-    else:
+    else:                                   #Mark even layers (odd inxex) as vertical
         output['meta']['layer_directions'][f'M{i + 1}'] = 'V'
-
-for i in range(NET_COUNT):               #Populate net information
+for i in range(NET_COUNT):                  #Populate net information
     output['nets'][f'NET_{i}'] = {
         'cost': netList[i][6], 
         'pins': [(netList[i][0], netList[i][1]), (netList[i][2], netList[i][3])],
         'segments':[]
         }
-    for j in range(len(segList[i])):    #Populate segments
+    for j in range(len(segList[i])):        #Populate segments
         output['nets'][f'NET_{i}']['segments'].append({'end': (segList[i][j][1][0], segList[i][j][1][1], f'M{1 + segList[i][j][1][2]}'), 'start': (segList[i][j][0][0], segList[i][j][0][1], f'M{1 + segList[i][j][0][2]}')})
-
-output_content = "data = " + pprint.PrettyPrinter(indent=4).pformat(output)             # Format output data
-with open(f'Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}.py', 'w') as f:                        # Open export location
-    f.write(output_content)                                                             # Export data
+output_content = "data = " + pprint.PrettyPrinter(indent=4).pformat(output)     #Format output with correct indentation
+with open(f'Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}.py', 'w') as f:              #Open export location
+    f.write(output_content)                                                     #Export data
 
 #Plot results
-if GENERATE_GRAPHS:
+if GENERATE_GRAPHS:                                                                 #If graphing is enabled
     print('Graphing results...')
-    from mpl_toolkits import mplot3d
+    #from mpl_toolkits import mplot3d
     import matplotlib.pyplot as plt
-
-    fig = plt.figure()              #Initialize plot
-    ax = plt.axes(projection='3d')  #Set it to 3D
-    ax.set_zlim([1,9])              #Show M1-M9 on z axis
-    ax.set_xlim([0, GRID_SIZE])      #Limit to show grid
+    fig = plt.figure()                                                              #Initialize plot
+    ax = plt.axes(projection='3d')                                                  #Set it to 3D
+    ax.set_zlim([1,9])                                                              #Show M1-M9 on z axis
+    ax.set_xlim([0, GRID_SIZE])                                                     #Limit to show grid
     ax.set_ylim([0, GRID_SIZE])
     colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan'] #List of line colors
     for i in range(NET_COUNT):       
-        for j in range(len(segList[i])):    #Plot each segment of each net. Use a set color for the whole net
+        for j in range(len(segList[i])):                                            #Plot each segment of each net. Use a set color for the whole net
             ax.plot(np.linspace(segList[i][j][0][0], segList[i][j][1][0]), np.linspace(segList[i][j][0][1], segList[i][j][1][1]), np.linspace(segList[i][j][0][2], segList[i][j][1][2]) + 1, color=colors[i%10], label=f'Net {i}, Seg {j}')
-    ax.set_xlabel('X Axis')
+    ax.set_xlabel('X Axis')                                                         #Label the axis'
     ax.set_ylabel('Y Axis')
     ax.set_zlabel('Metal Layer')
     print(f'Saving graphs to ./Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_View.png ...')
-    ax.view_init(elev=90, azim=-90)     #Show top view
-    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Top.png", dpi=400)       #Save plot
-    ax.view_init(elev=0, azim=-90)      #Show front view
-    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Front.png", dpi=400)     #Save plot
-    ax.view_init(elev=0, azim=0)        #Show side view
-    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Side.png", dpi=400)      #Save plot
-    ax.view_init(elev=45, azim=-45)     #Show isometric view
-    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Isometric.png", dpi=400) #Save plot
-    if SHOW_GRAPH:
+    ax.view_init(elev=90, azim=-90)                                                 #Show top view
+    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Top.png", dpi=400)         #Save plot
+    ax.view_init(elev=0, azim=-90)                                                  #Show front view
+    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Front.png", dpi=400)       #Save plot
+    ax.view_init(elev=0, azim=0)                                                    #Show side view
+    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Side.png", dpi=400)        #Save plot
+    ax.view_init(elev=45, azim=-45)                                                 #Show isometric view
+    plt.savefig(f"Lowry_Clishe_{FOLDER_NAME}/{DATA_NAME}_Isometric.png", dpi=400)   #Save plot
+    if SHOW_GRAPH:                                                                  #If displaying the pop up window is enabled
         print('Displaying graph...')
-        plt.show()                      #Show plot
+        plt.show()                                                                  #Show plot
